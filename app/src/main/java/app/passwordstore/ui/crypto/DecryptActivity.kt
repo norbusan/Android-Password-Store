@@ -16,11 +16,14 @@ import app.passwordstore.R
 import app.passwordstore.crypto.PGPIdentifier
 import app.passwordstore.crypto.errors.IncorrectPassphraseException
 import app.passwordstore.crypto.errors.NoDecryptionKeyAvailableException
+import app.passwordstore.crypto.errors.UnknownError
 import app.passwordstore.data.passfile.PasswordEntry
 import app.passwordstore.data.password.FieldItem
 import app.passwordstore.databinding.DecryptLayoutBinding
 import app.passwordstore.ui.adapters.FieldItemAdapter
 import app.passwordstore.util.crypto.AESEncryption
+import app.passwordstore.util.crypto.OpenPgpCardStatusException
+import app.passwordstore.util.crypto.OpenPgpNfcCard
 import app.passwordstore.util.extensions.enableEdgeToEdgeView
 import app.passwordstore.util.extensions.getString
 import app.passwordstore.util.extensions.snackbar
@@ -30,6 +33,7 @@ import app.passwordstore.util.extensions.wipe
 import app.passwordstore.util.settings.PreferenceKeys
 import com.github.michaelbull.result.getError
 import com.github.michaelbull.result.getOrThrow
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dagger.hilt.android.AndroidEntryPoint
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -74,6 +78,7 @@ class DecryptActivity : BasePGPActivity() {
   }
 
   override fun onDestroy() {
+    OpenPgpNfcCard.disableReaderMode(this)
     encryptedEntryChars?.wipe()
     itemsAdapter?.clearItems()
     super.onDestroy()
@@ -84,6 +89,10 @@ class DecryptActivity : BasePGPActivity() {
     identifiers: List<PGPIdentifier>,
     onSuccess: suspend (String) -> Unit,
   ) {
+    if (identifiers.any { repository.hasOnlyStubDecKey(it) || repository.isSmartcardBacked(it) }) {
+      decryptWithSmartcard(passphrases, identifiers, onSuccess)
+      return
+    }
     val message = withContext(dispatcherProvider.io()) { File(fullPath).readBytes().inputStream() }
     val outputStream = ByteArrayOutputStream()
     val results = repository.decrypt(passphrases, identifiers, message, outputStream)
@@ -129,6 +138,105 @@ class DecryptActivity : BasePGPActivity() {
       cachedPassphrases.clear()
     }
   }
+
+  private suspend fun decryptWithSmartcard(
+    passphrases: Map<String, CharArray?>,
+    identifiers: List<PGPIdentifier>,
+    onSuccess: suspend (String) -> Unit,
+  ) {
+    val pin = passphrases.values.firstOrNull()
+    if (pin == null) {
+      decrypt(identifiers, isError = true)
+      return
+    }
+    val progressDialog =
+      MaterialAlertDialogBuilder(this)
+        .setTitle(R.string.openpgp_nfc_decrypt_title)
+        .setMessage(R.string.openpgp_nfc_tap_card)
+        .setNegativeButton(R.string.dialog_cancel) { _, _ ->
+          OpenPgpNfcCard.disableReaderMode(this)
+          pin.wipe()
+          finish()
+        }
+        .setCancelable(false)
+        .show()
+    val message = withContext(dispatcherProvider.io()) { File(fullPath).readBytes().inputStream() }
+    val outputStream = ByteArrayOutputStream()
+    val results =
+      runCatching {
+          OpenPgpNfcCard.waitForCard(
+              this@DecryptActivity,
+              disableReaderModeOnError = false,
+              disableReaderModeOnClose = false,
+            )
+            .use { card ->
+              repository.decryptWithSmartcard(pin, identifiers, message, outputStream, card)
+            }
+        }
+        .getOrElse {
+          progressDialog.dismiss()
+          showSmartcardError(friendlySmartcardError(it))
+          pin.wipe()
+          return
+        }
+    val lastResult = results.last()
+    progressDialog.dismiss()
+    if (lastResult.second.isOk) {
+      val decryptedEntryBytes = lastResult.second.getOrThrow().toByteArray()
+      lastResult.second.getOrThrow().wipe()
+      val decryptedEntryChars = decryptedEntryBytes.toCharArray()
+      decryptedEntryBytes.wipe()
+      val entry = passwordEntryFactory.create(decryptedEntryChars)
+      encryptedEntryChars = AESEncryption.encrypt(decryptedEntryChars)
+      decryptedEntryChars.wipe()
+      entry.clearExtraChars()
+      createPasswordUI(entry)
+      onSuccess(lastResult.first)
+    } else {
+      val error = lastResult.second.getError()
+      if (isSmartcardPinFailure(error)) {
+        passphrases.keys.forEach { id ->
+          cachedPassphrases[id]?.wipe()
+          cachedPassphrases.remove(id)
+        }
+        pin.wipe()
+        decrypt(identifiers, isError = true)
+        return
+      }
+      showSmartcardError(friendlySmartcardError(error))
+    }
+    pin.wipe()
+  }
+
+  private fun showSmartcardError(message: String) {
+    MaterialAlertDialogBuilder(this)
+      .setTitle(R.string.openpgp_nfc_decrypt_failed_title)
+      .setMessage(message)
+      .setPositiveButton(android.R.string.ok) { _, _ ->
+        OpenPgpNfcCard.disableReaderMode(this)
+        finish()
+      }
+      .setCancelable(false)
+      .show()
+  }
+
+  private fun friendlySmartcardError(error: Throwable?): String =
+    if (isSmartcardPinFailure(error)) {
+      resources.getString(R.string.openpgp_card_wrong_pin)
+    } else {
+      error?.message ?: resources.getString(R.string.password_decryption_unknown_error)
+    }
+
+  private fun isSmartcardPinFailure(error: Throwable?): Boolean =
+    when {
+      error == null -> false
+      error is OpenPgpCardStatusException && error.isAuthenticationFailure -> true
+      error is UnknownError && isSmartcardPinFailure(error.cause) -> true
+      error.message?.contains("69 82", ignoreCase = true) == true -> true
+      Regex("""63 c[0-9a-f]""", RegexOption.IGNORE_CASE).containsMatchIn(error.message.orEmpty()) ->
+        true
+      else -> isSmartcardPinFailure(error.cause)
+    }
 
   override fun onCreateOptionsMenu(menu: Menu): Boolean {
     menuInflater.inflate(R.menu.pgp_handler, menu)

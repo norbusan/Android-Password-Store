@@ -435,6 +435,10 @@ open class BasePGPActivity : AppCompatActivity() {
     return "${resources.getString(label)} ${emails.joinToString(", ")}"
   }
 
+  protected fun needsSmartcardPin(identifiers: List<PGPIdentifier>): Boolean = identifiers.any {
+    repository.hasOnlyStubDecKey(it) || repository.isSmartcardBacked(it)
+  }
+
   @Suppress("ReturnCount")
   private fun File.findTillRoot(fileName: String, rootPath: File): File? {
     val gpgFile = File(this, fileName)
@@ -459,8 +463,20 @@ open class BasePGPActivity : AppCompatActivity() {
   private suspend fun askPassphrase(isError: Boolean, identifiers: List<PGPIdentifier>) {
     if (++retries > MAX_RETRIES) finish()
 
+    val needsSmartcardPin = needsSmartcardPin(identifiers)
     val dialog =
-      PasswordDialog.newInstance(getEmailsFromIdentifiers(identifiers), cacheOptionVisible = true)
+      if (needsSmartcardPin) {
+        PasswordDialog.newInstance(
+          getEmailsFromIdentifiers(identifiers),
+          cacheOptionVisible = true,
+          titleRes = R.string.openpgp_card_pin_title,
+          hintRes = R.string.openpgp_card_pin_hint,
+          errorRes = R.string.openpgp_card_wrong_pin,
+          cacheLabelRes = R.string.cache_openpgp_card_pin_until_screen_off,
+        )
+      } else {
+        PasswordDialog.newInstance(getEmailsFromIdentifiers(identifiers), cacheOptionVisible = true)
+      }
     if (isError) dialog.setError()
     dialog.show(supportFragmentManager, "PASSWORD_DIALOG")
     dialog.setFragmentResultListener(PasswordDialog.PASSWORD_RESULT_KEY) { key, bundle ->
@@ -472,6 +488,27 @@ open class BasePGPActivity : AppCompatActivity() {
         var cacheEnabled = bundle.getBoolean(PasswordDialog.PASSWORD_CACHE_KEY)
         lifecycleScope.launch(dispatcherProvider.main()) {
           decryptWithPassphrase(mapOf("" to passphrase), identifiers) { id -> // onSuccess
+            if (needsSmartcardPin) {
+              runCatching {
+                  val isHardwareBacked = AESEncryption.isHardwareBacked()
+                  val encryptedPin = AESEncryption.encrypt(passphrase)
+                  if (isHardwareBacked && cacheEnabled && encryptedPin != null) {
+                    cachedPassphrases.put(id, encryptedPin)
+                  } else {
+                    cachedPassphrases[id]?.wipe()
+                    cachedPassphrases.remove(id)
+                  }
+                  settings.edit {
+                    putBoolean(
+                      PreferenceKeys.CACHE_PASSPHRASE,
+                      isHardwareBacked && cacheEnabled && encryptedPin != null,
+                    )
+                  }
+                }
+                .onErr { e -> logcat { e.asLog() } }
+              passphrase.wipe()
+              return@decryptWithPassphrase
+            }
             runCatching {
                 // update temporary passphrase cache
                 val isHardwareBacked = AESEncryption.isHardwareBacked()
@@ -763,7 +800,15 @@ open class BasePGPActivity : AppCompatActivity() {
       identifiers.map { it.toString() }.contains(it)
     }
     lifecycleScope.launch(dispatcherProvider.main()) {
-      if (!repository.isPasswordProtected(identifiers) && !isError) {
+      if (needsSmartcardPin(identifiers) && !isError && !passphrases.isEmpty()) {
+        val decryptedCachedPins = passphrases.mapValues {
+          AESEncryption.decrypt(it.value) ?: charArrayOf()
+        }
+        decryptWithPassphrase(decryptedCachedPins, identifiers)
+        decryptedCachedPins.values.forEach { it.wipe() }
+      } else if (needsSmartcardPin(identifiers)) {
+        askPassphrase(isError = isError, identifiers)
+      } else if (!repository.isPasswordProtected(identifiers) && !isError) {
         // try passphraseless decryption first
         decryptWithPassphrase(mapOf("" to null), identifiers)
       } else if (!isError && !passphrases.isEmpty()) {

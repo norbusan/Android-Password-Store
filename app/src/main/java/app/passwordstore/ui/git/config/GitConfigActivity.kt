@@ -48,6 +48,7 @@ class GitConfigActivity : BaseGitActivity() {
     if (gitSettings.authorName.isEmpty()) binding.gitUserName.requestFocus()
     else binding.gitUserName.setText(gitSettings.authorName)
     binding.gitUserEmail.setText(gitSettings.authorEmail)
+    binding.signCommits.isChecked = gitSettings.signCommits
     setupTools()
     binding.saveButton.setOnClickListener {
       val email = binding.gitUserEmail.text.toString().trim()
@@ -60,6 +61,7 @@ class GitConfigActivity : BaseGitActivity() {
       } else {
         gitSettings.authorEmail = email
         gitSettings.authorName = name
+        gitSettings.signCommits = binding.signCommits.isChecked
         Snackbar.make(
             binding.root,
             getString(R.string.git_server_config_save_success),

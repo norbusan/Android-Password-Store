@@ -74,6 +74,19 @@ public object KeyUtils {
   public fun tryGetKeyId(cert: OpenPGPCertificate): KeyId =
     cert.getPrimaryKey().getKeyIdentifier().getKeyId().let { KeyId(it) }
 
+  /** Returns all fingerprints present in [key], including subkeys. */
+  public fun tryGetFingerprints(key: PGPKey): List<ByteArray> =
+    tryParseCertificateOrKey(key)?.getAllKeyIdentifiers()?.mapNotNull { it.getFingerprint() }
+      ?: emptyList()
+
+  /** Returns true if [key] contains any of [fingerprints]. */
+  public fun containsAnyFingerprint(key: PGPKey, fingerprints: List<ByteArray>): Boolean {
+    val keyFingerprints = tryGetFingerprints(key)
+    return keyFingerprints.any { keyFingerprint ->
+      fingerprints.any { fingerprint -> keyFingerprint.contentEquals(fingerprint) }
+    }
+  }
+
   /**
    * Queries all secret subkey IDs of a given [OpenPGPCertificate] along with their usages (C,E,S,A)
    * and whether the private key was stripped
@@ -116,14 +129,15 @@ public object KeyUtils {
   /** Tests if the given [PGPKey] content is a PGP certificate or key at all */
   public fun isCertificateOrKey(key: PGPKey): Boolean = tryParseCertificateOrKey(key) != null
 
-  /** Tests if the given [PGPKey] provides any secret non-stripped subkey */
+  /** Tests if the given [PGPKey] provides any secret subkey, including smartcard stubs. */
   public fun isSecretKey(key: PGPKey): Boolean =
     tryParseCertificateOrKey(key)?.let { isSecretKey(it) } ?: false
 
-  /** Tests if the given [OpenPGPCertificate] provides any secret non-stripped subkey */
+  /**
+   * Tests if the given [OpenPGPCertificate] provides any secret subkey, including smartcard stubs.
+   */
   public fun isSecretKey(cert: OpenPGPCertificate): Boolean =
-    cert is OpenPGPKey &&
-      cert.getSecretKeys().values.any { !it.getPGPSecretKey().isPrivateKeyEmpty() }
+    cert is OpenPGPKey && cert.getSecretKeys().values.any()
 
   /**
    * Tests if the given [PGPKey] can be used for encryption, which is a bare minimum necessity for
@@ -139,16 +153,27 @@ public object KeyUtils {
   public fun isKeyUsable(cert: OpenPGPCertificate): Boolean =
     KeyRingInfo(cert).isUsableForEncryption
 
-  /** Tests if the given [PGPKey] provides a decryption-capable secret subkey */
+  /** Tests if the given [PGPKey] provides a decryption-capable secret subkey. */
   public fun hasDecKey(key: PGPKey): Boolean =
     tryParseCertificateOrKey(key)?.let { hasDecKey(it) } ?: false
 
-  /** Tests if the given [OpenPGPCertificate] provides a decryption-capable secret subkey */
+  /** Tests if the given [OpenPGPCertificate] provides a decryption-capable secret subkey. */
   public fun hasDecKey(cert: OpenPGPCertificate): Boolean =
+    cert is OpenPGPKey && cert.getSecretKeys().values.any { it.isEncryptionKey() }
+
+  /** Tests if the given [PGPKey] provides only card-backed decryption stubs. */
+  public fun hasOnlyStubDecKeys(key: PGPKey): Boolean =
+    tryParseCertificateOrKey(key)?.let { hasOnlyStubDecKeys(it) } ?: false
+
+  /** Tests if the given [OpenPGPCertificate] provides only card-backed decryption stubs. */
+  public fun hasOnlyStubDecKeys(cert: OpenPGPCertificate): Boolean =
     cert is OpenPGPKey &&
-      cert.getSecretKeys().values.any {
-        it.isEncryptionKey() && !it.getPGPSecretKey().isPrivateKeyEmpty()
-      }
+      cert.getSecretKeys().values.any { it.isEncryptionKey() } &&
+      cert
+        .getSecretKeys()
+        .values
+        .filter { it.isEncryptionKey() }
+        .all { it.getPGPSecretKey().isPrivateKeyEmpty() }
 
   /** Tests if the given [PGPKey] provides an authentication-capable secret subkey */
   public fun hasAuthKey(key: PGPKey): Boolean =
