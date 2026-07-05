@@ -254,8 +254,17 @@ class OpenPgpCommitSigner(
               pin?.wipe()
               pin = null
               pinFromCache = false
-              // Trust the card's own retry counter rather than tracking attempts in the app.
-              val remaining = OpenPgpCardPrompt.smartcardPinRetriesRemaining(e)
+              val isFormatError = OpenPgpCardPrompt.isSmartcardPinFormatError(e)
+              // Trust the card's own retry counter rather than tracking attempts in the app; if it
+              // didn't put the count in 63 Cx, ask it directly with a non-destructive status check.
+              // A length rejection never touches the counter, so there's nothing to query for it.
+              val remaining =
+                OpenPgpCardPrompt.smartcardPinRetriesRemaining(e)
+                  ?: if (!isFormatError) {
+                    runCatching { attempt.card?.readSignaturePinRetries() }.getOrNull()
+                  } else {
+                    null
+                  }
               if (remaining == 0) {
                 // Blocked: hold reader mode until the card is lifted, then abort — the outer catch
                 // reports it in a dialog.
@@ -266,8 +275,7 @@ class OpenPgpCommitSigner(
               runCatching { attempt.card?.close() }
               pinErrorMessage =
                 when {
-                  OpenPgpCardPrompt.isSmartcardPinFormatError(e) ->
-                    activity.getString(R.string.openpgp_card_pin_not_accepted)
+                  isFormatError -> activity.getString(R.string.openpgp_card_pin_not_accepted)
                   remaining != null ->
                     activity.resources.getQuantityString(
                       R.plurals.openpgp_card_wrong_pin_remaining,

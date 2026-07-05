@@ -40,6 +40,28 @@ class OpenPgpNfcCard(
     verifyPin(pin, reference = 0x81)
   }
 
+  /** Remaining PW1 verification attempts as seen through the decryption (0x82) slot. */
+  fun readUserPinRetries(): Int? = readPinRetries(reference = 0x82)
+
+  /** Remaining PW1 verification attempts as seen through the signature (0x81) slot. */
+  fun readSignaturePinRetries(): Int? = readPinRetries(reference = 0x81)
+
+  /**
+   * Asks the card how many verification attempts are left for the password [reference], *without*
+   * consuming one. Per the OpenPGP Card spec a VERIFY with an empty data field (a Case-1 APDU) is a
+   * pure status check: the card answers `63 Cx` (x tries left), `69 83` (blocked → 0), or `90 00`
+   * (already verified this session). Returns null when the card doesn't report a usable count.
+   */
+  private fun readPinRetries(reference: Int): Int? =
+    try {
+      transceive(byteArrayOf(0x00, 0x20, 0x00, reference.toByte()))
+      null // 90 00: already verified this session; no counter reported.
+    } catch (e: OpenPgpCardStatusException) {
+      e.retriesRemaining
+    } catch (e: IOException) {
+      null // A transport problem while probing shouldn't mask the original failure.
+    }
+
   private fun verifyPin(pin: CharArray, reference: Int) {
     val pinBytes = pin.concatToString().toByteArray(Charsets.UTF_8)
     try {

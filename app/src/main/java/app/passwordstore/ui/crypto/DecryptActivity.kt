@@ -251,7 +251,20 @@ class DecryptActivity : BasePGPActivity() {
               pin?.wipe()
               pin = null
               pinFromCache = false
-              val remaining = OpenPgpCardPrompt.smartcardPinRetriesRemaining(error)
+              val isFormatError = OpenPgpCardPrompt.isSmartcardPinFormatError(error)
+              // Prefer the count the card volunteered in 63 Cx; otherwise ask it directly with a
+              // non-destructive status check so the remaining tries can still be shown after a
+              // status word that omits them (69 82, …). A length rejection never touches the
+              // counter, so there's nothing to query for it.
+              val remaining =
+                OpenPgpCardPrompt.smartcardPinRetriesRemaining(error)
+                  ?: if (!isFormatError) {
+                    withContext(dispatcherProvider.io()) {
+                      runCatching { attempt.card?.readUserPinRetries() }.getOrNull()
+                    }
+                  } else {
+                    null
+                  }
               if (remaining == 0) {
                 // Blocked: report in a dialog and hold reader mode until the card is lifted.
                 prompt.dismissDialog()
@@ -263,8 +276,7 @@ class DecryptActivity : BasePGPActivity() {
               runCatching { attempt.card?.close() }
               pinErrorMessage =
                 when {
-                  OpenPgpCardPrompt.isSmartcardPinFormatError(error) ->
-                    getString(R.string.openpgp_card_pin_not_accepted)
+                  isFormatError -> getString(R.string.openpgp_card_pin_not_accepted)
                   remaining != null ->
                     resources.getQuantityString(
                       R.plurals.openpgp_card_wrong_pin_remaining,
