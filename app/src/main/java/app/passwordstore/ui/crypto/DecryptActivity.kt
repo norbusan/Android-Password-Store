@@ -262,14 +262,16 @@ class DecryptActivity : BasePGPActivity() {
               }
               runCatching { attempt.card?.close() }
               pinErrorMessage =
-                if (remaining != null) {
-                  resources.getQuantityString(
-                    R.plurals.openpgp_card_wrong_pin_remaining,
-                    remaining,
-                    remaining,
-                  )
-                } else {
-                  getString(R.string.openpgp_card_wrong_pin)
+                when {
+                  OpenPgpCardPrompt.isSmartcardPinFormatError(error) ->
+                    getString(R.string.openpgp_card_pin_not_accepted)
+                  remaining != null ->
+                    resources.getQuantityString(
+                      R.plurals.openpgp_card_wrong_pin_remaining,
+                      remaining,
+                      remaining,
+                    )
+                  else -> getString(R.string.openpgp_card_wrong_pin)
                 }
               continue
             }

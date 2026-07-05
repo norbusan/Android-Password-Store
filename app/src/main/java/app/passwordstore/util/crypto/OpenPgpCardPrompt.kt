@@ -304,11 +304,27 @@ class OpenPgpCardPrompt(
     fun isSmartcardPinFailure(error: Throwable?): Boolean {
       var cause = error
       while (cause != null) {
+        // A PIN the card rejected for its length/format is also a (recoverable) PIN problem.
+        if (cause is SmartcardPinFormatException) return true
         if (cause is OpenPgpCardStatusException && cause.isAuthenticationFailure) return true
         val message = cause.message.orEmpty()
         if (message.contains("69 82", ignoreCase = true)) return true
         if (message.contains("69 83", ignoreCase = true)) return true
         if (PIN_FAILURE_REGEX.containsMatchIn(message)) return true
+        cause = cause.cause
+      }
+      return false
+    }
+
+    /**
+     * Whether [error] is a PIN the card rejected for its length/format (see
+     * [SmartcardPinFormatException]) — distinct from a plain wrong PIN, and not counted against the
+     * retry counter.
+     */
+    fun isSmartcardPinFormatError(error: Throwable?): Boolean {
+      var cause = error
+      while (cause != null) {
+        if (cause is SmartcardPinFormatException) return true
         cause = cause.cause
       }
       return false
@@ -329,16 +345,26 @@ class OpenPgpCardPrompt(
     }
 
     /**
-     * Whether [error] is a transient NFC/card transport problem (as opposed to a PIN rejection or a
-     * fatal error), for which the user should simply present the card again.
+     * Whether [error] is a transient NFC/card *transport* problem (tag lost mid-exchange, a
+     * malformed/short response, a transceive glitch), for which the user should simply present the
+     * card again.
+     *
+     * Crucially, an [OpenPgpCardStatusException] is *not* retryable even though it extends
+     * [IOException]: the card answered with a status word, so it was read just fine — that's a card
+     * error to report (or, if it's a PIN rejection, to re-prompt for), never a "couldn't read the
+     * card". Only a plain transport [IOException] (no card status word anywhere in the chain)
+     * counts.
      */
     fun isRetryableCardError(error: Throwable?): Boolean {
       var cause = error
+      var transportFailure = false
       while (cause != null) {
-        if (cause is IOException) return true
+        // The card responded — whatever the status word, this was not a failed read.
+        if (cause is OpenPgpCardStatusException) return false
+        if (cause is IOException) transportFailure = true
         cause = cause.cause
       }
-      return false
+      return transportFailure
     }
 
     /** Whether [error] (or a cause) is an already-reported smartcard failure (see below). */

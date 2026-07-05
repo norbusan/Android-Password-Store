@@ -265,14 +265,16 @@ class OpenPgpCommitSigner(
               }
               runCatching { attempt.card?.close() }
               pinErrorMessage =
-                if (remaining != null) {
-                  activity.resources.getQuantityString(
-                    R.plurals.openpgp_card_wrong_pin_remaining,
-                    remaining,
-                    remaining,
-                  )
-                } else {
-                  activity.getString(R.string.openpgp_card_wrong_pin)
+                when {
+                  OpenPgpCardPrompt.isSmartcardPinFormatError(e) ->
+                    activity.getString(R.string.openpgp_card_pin_not_accepted)
+                  remaining != null ->
+                    activity.resources.getQuantityString(
+                      R.plurals.openpgp_card_wrong_pin_remaining,
+                      remaining,
+                      remaining,
+                    )
+                  else -> activity.getString(R.string.openpgp_card_wrong_pin)
                 }
               continue
             }
