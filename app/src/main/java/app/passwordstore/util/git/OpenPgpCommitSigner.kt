@@ -5,8 +5,8 @@
 
 package app.passwordstore.util.git
 
-import android.text.InputType
-import android.view.WindowManager
+import android.widget.Button
+import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.FragmentActivity
 import app.passwordstore.R
 import app.passwordstore.crypto.KeyUtils
@@ -14,24 +14,24 @@ import app.passwordstore.crypto.PGPIdentifier
 import app.passwordstore.crypto.PGPKey
 import app.passwordstore.crypto.PGPKeyManager
 import app.passwordstore.data.repo.PasswordRepository
+import app.passwordstore.util.crypto.CardReader
+import app.passwordstore.util.crypto.OpenPgpCardPrompt
 import app.passwordstore.util.crypto.OpenPgpNfcCard
 import app.passwordstore.util.crypto.OpenPgpSmartcardStore
+import app.passwordstore.util.crypto.SmartcardOperationHandledException
+import app.passwordstore.util.extensions.hideKeyboard
 import app.passwordstore.util.extensions.wipe
 import com.github.michaelbull.result.get
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
-import com.google.android.material.textfield.TextInputLayout
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.OutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicReference
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
+import logcat.asLog
+import logcat.logcat
 import org.bouncycastle.asn1.DERNull
 import org.bouncycastle.asn1.nist.NISTObjectIdentifiers
 import org.bouncycastle.asn1.x509.AlgorithmIdentifier
@@ -77,13 +77,17 @@ class OpenPgpCommitSigner(
     val primaryKeyId =
       KeyUtils.tryGetKeyId(signingKey)
         ?: throw PGPException("Cannot determine OpenPGP signing key ID")
+    val payload = commit.build()
     val signature =
       if (smartcardStore.hasAssociation(primaryKeyId)) {
-        signWithSmartcard(signingKey, primaryKeyId, commit.build())
+        signWithSmartcard(signingKey, primaryKeyId, payload)
       } else {
-        signWithSecretKey(signingKey, commit.build())
+        signWithSecretKey(signingKey, payload)
       }
-    commit.setGpgSignature(GpgSignature(signature))
+    // A null signature means the user chose to proceed with an unsigned commit.
+    if (signature != null) {
+      commit.setGpgSignature(GpgSignature(signature))
+    }
   }
 
   override fun canLocateSigningKey(
@@ -119,10 +123,14 @@ class OpenPgpCommitSigner(
       throw PGPException("Git commit signing key is a smartcard stub without a card association")
     }
     val passphrase =
-      askSecret(
-        titleRes = R.string.git_signing_passphrase_title,
-        hintRes = R.string.ssh_keygen_passphrase,
-      )
+      runBlocking {
+          OpenPgpCardPrompt(activity, R.string.git_signing_passphrase_title)
+            .askSecret(
+              titleRes = R.string.git_signing_passphrase_title,
+              hintRes = R.string.ssh_keygen_passphrase,
+            )
+        }
+        ?.secret ?: throw CanceledException(activity.getString(R.string.dialog_cancel))
     try {
       val decryptor =
         BcPBESecretKeyDecryptorBuilder(BcPGPDigestCalculatorProvider()).build(passphrase)
@@ -138,76 +146,215 @@ class OpenPgpCommitSigner(
     }
   }
 
+  /**
+   * Signs [payload] with the OpenPGP smartcard associated with [primaryKeyId].
+   *
+   * Returns `null` when the user explicitly opts to proceed with an unsigned commit, in which case
+   * the caller must not attach a signature to the commit.
+   */
   private fun signWithSmartcard(
     key: PGPKey,
     primaryKeyId: PGPIdentifier.KeyId,
     payload: ByteArray,
-  ): ByteArray {
-    val cardFingerprints = smartcardStore.getFingerprints(primaryKeyId)
-    val publicKey = findCardSigningKey(key, cardFingerprints)
-    val pin =
-      askSecret(
-        titleRes = R.string.git_signing_card_pin_title,
-        hintRes = R.string.openpgp_card_pin_hint,
-      )
+  ): ByteArray? {
+    // Collapse (and unfocus) the entry form's keyboard up front so it can't linger behind the
+    // signing dialogs or resurface over the status/error UI when they close.
+    activity.runOnUiThread { activity.hideKeyboard() }
+    when (confirmSmartcardSigning()) {
+      SigningChoice.CANCEL -> throw CanceledException(activity.getString(R.string.dialog_cancel))
+      SigningChoice.SKIP -> return null
+      SigningChoice.SIGN -> {}
+    }
+    // The shared prompt keeps reader mode enabled for the whole operation, shows the reused
+    // present/hold-card dialog, and runs the card exchange on the card's own thread. Any smartcard
+    // failure is reported to the user in a dialog (never a snackbar) by the outer catch below.
+    val prompt = OpenPgpCardPrompt(activity, R.string.git_signing_card_title)
+    var reader: CardReader? = null
+    var pin: CharArray? = null
+    // Reader mode is released via the removal watcher (which disables it once the card leaves) on
+    // every terminal outcome — success or failure — so the finally only closes it if we exit
+    // unexpectedly.
+    var readerHandedOff = false
     try {
-      val card =
-        waitForSigningCard() ?: throw CanceledException(activity.getString(R.string.dialog_cancel))
-      card.use {
-        val privateKey = PGPPrivateKey(publicKey.keyID, publicKey.publicKeyPacket, null)
-        return buildDetachedSignature(
-          publicKey,
-          CardContentSignerBuilder(publicKey, pin, it),
-          privateKey,
-          payload,
+      // Namespaced so the signing PIN cache is kept separate from the decryption PIN cache.
+      val cacheKey = "sign:$primaryKeyId"
+      val cardFingerprints = smartcardStore.getFingerprints(primaryKeyId)
+      val publicKey = findCardSigningKey(key, cardFingerprints)
+      val activeReader =
+        runBlocking { prompt.createReader() }
+          ?: throw IOException(activity.getString(R.string.openpgp_nfc_unavailable))
+      reader = activeReader
+      val presentMessage = activity.getString(R.string.git_signing_tap_card)
+      var pinFromCache = false
+      var cachePin = false
+      var pinErrorMessage: String? = null
+      var cardMessage = presentMessage
+      prompt.readCachedPin(cacheKey)?.let {
+        pin = it
+        pinFromCache = true
+      }
+      while (true) {
+        if (pin == null) {
+          // Take the card dialog down while the PIN dialog is up so they don't stack.
+          runBlocking { prompt.dismissDialog() }
+          val entry =
+            runBlocking {
+              prompt.askSecret(
+                titleRes = R.string.git_signing_card_pin_title,
+                hintRes = R.string.openpgp_card_pin_hint,
+                showCacheOption = true,
+                errorMessage = pinErrorMessage,
+              )
+            } ?: throw CanceledException(activity.getString(R.string.dialog_cancel))
+          pin = entry.secret
+          cachePin = entry.cache
+          pinFromCache = false
+          pinErrorMessage = null
+          cardMessage = presentMessage
+        }
+        val currentPin = requireNotNull(pin)
+        // The whole card exchange (applet select → verify → sign) runs on a single thread with no
+        // hop, so a genuine wrong PIN reliably comes back as a card status word (e.g. 63 Cx) rather
+        // than a transceive error caused by racing the NFC presence check.
+        val attempt = runBlocking {
+          prompt.attempt(activeReader, cardMessage) { card ->
+            card.verifySignaturePin(currentPin)
+            val privateKey = PGPPrivateKey(publicKey.keyID, publicKey.publicKeyPacket, null)
+            buildDetachedSignature(
+              publicKey,
+              CardContentSignerBuilder(publicKey, card),
+              privateKey,
+              payload,
+            )
+          }
+        }
+        when (attempt) {
+          is OpenPgpCardPrompt.Attempt.Success -> {
+            runBlocking { prompt.dismissDialog() }
+            // Cache the PIN only now that the whole signing operation has succeeded, so a rejected
+            // PIN is never persisted.
+            if (!pinFromCache) prompt.storeCachedPin(cacheKey, currentPin, cachePin)
+            // Keep reader mode on until the card is physically lifted so the platform never
+            // dispatches its NDEF URL while it is still present (e.g. while the success dialog is
+            // up).
+            readerHandedOff = true
+            prompt.releaseReaderWhenCardRemoved(attempt.card, activeReader)
+            return attempt.value
+          }
+          OpenPgpCardPrompt.Attempt.Cancelled -> {
+            readerHandedOff = true
+            prompt.releaseReaderWhenCardRemoved(null, activeReader)
+            throw CanceledException(activity.getString(R.string.dialog_cancel))
+          }
+          is OpenPgpCardPrompt.Attempt.Error -> {
+            val e = attempt.error
+            if (OpenPgpCardPrompt.isSmartcardPinFailure(e)) {
+              // A rejected PIN must never be kept in the cache.
+              prompt.clearCachedPin(cacheKey)
+              pin?.wipe()
+              pin = null
+              pinFromCache = false
+              // Trust the card's own retry counter rather than tracking attempts in the app.
+              val remaining = OpenPgpCardPrompt.smartcardPinRetriesRemaining(e)
+              if (remaining == 0) {
+                // Blocked: hold reader mode until the card is lifted, then abort — the outer catch
+                // reports it in a dialog.
+                readerHandedOff = true
+                prompt.releaseReaderWhenCardRemoved(attempt.card, activeReader)
+                throw PGPException(activity.getString(R.string.openpgp_card_pin_blocked))
+              }
+              runCatching { attempt.card?.close() }
+              pinErrorMessage =
+                if (remaining != null) {
+                  activity.resources.getQuantityString(
+                    R.plurals.openpgp_card_wrong_pin_remaining,
+                    remaining,
+                    remaining,
+                  )
+                } else {
+                  activity.getString(R.string.openpgp_card_wrong_pin)
+                }
+              continue
+            }
+            // Any other NFC/card hiccup (tag lost mid-exchange, transient 6A 80, …) never reaches
+            // the card's PIN counter: let the user present the card again.
+            if (OpenPgpCardPrompt.isRetryableCardError(e)) {
+              runCatching { attempt.card?.close() }
+              cardMessage = activity.getString(R.string.openpgp_nfc_card_comm_failed)
+              continue
+            }
+            // Any other terminal error: hold reader mode until the card is lifted, then propagate.
+            readerHandedOff = true
+            prompt.releaseReaderWhenCardRemoved(attempt.card, activeReader)
+            throw e
+          }
+        }
+      }
+    } catch (e: Throwable) {
+      // Cancellation and already-reported failures propagate untouched; every other smartcard
+      // failure is reported in a dialog (never a snackbar), then marked handled.
+      if (e is CanceledException || OpenPgpCardPrompt.isHandled(e)) throw e
+      runBlocking {
+        prompt.dismissDialog()
+        prompt.showError(
+          R.string.error,
+          e.message ?: activity.getString(R.string.password_decryption_unknown_error),
         )
       }
+      throw SmartcardOperationHandledException(e.message)
     } finally {
-      pin.wipe()
+      pin?.wipe()
+      runBlocking { prompt.dismissDialog() }
+      if (!readerHandedOff && reader != null) prompt.releaseReaderWhenCardRemoved(null, reader)
     }
   }
 
-  private fun waitForSigningCard(): OpenPgpNfcCard? {
-    val dialogRef = AtomicReference<android.app.Dialog?>()
-    return runBlocking {
-      val cardResult = CompletableDeferred<OpenPgpNfcCard?>()
-      val waitJob = AtomicReference<Job?>()
-      withContext(Dispatchers.Main) {
-        dialogRef.set(
-          MaterialAlertDialogBuilder(activity)
-            .setTitle(R.string.openpgp_nfc_decrypt_title)
-            .setMessage(R.string.git_signing_tap_card)
-            .setNegativeButton(R.string.dialog_cancel) { _, _ ->
-              waitJob.get()?.cancel()
-              OpenPgpNfcCard.disableReaderMode(activity)
-              cardResult.complete(null)
-            }
-            .setCancelable(false)
-            .show()
-        )
-        waitJob.set(
-          CoroutineScope(Dispatchers.Main).launch {
-            runCatching {
-                OpenPgpNfcCard.waitForCard(
-                  activity,
-                  disableReaderModeOnError = true,
-                  disableReaderModeOnClose = true,
-                )
-              }
-              .fold(
-                onSuccess = { cardResult.complete(it) },
-                onFailure = { cardResult.completeExceptionally(it) },
-              )
-          }
-        )
-      }
+  private enum class SigningChoice {
+    SIGN,
+    SKIP,
+    CANCEL,
+  }
+
+  private fun confirmSmartcardSigning(): SigningChoice {
+    if (activity.isFinishing || activity.isDestroyed) return SigningChoice.CANCEL
+    val choice = AtomicReference(SigningChoice.CANCEL)
+    val latch = CountDownLatch(1)
+    val error = AtomicReference<Throwable?>(null)
+    activity.runOnUiThread {
       try {
-        cardResult.await()
-      } finally {
-        waitJob.get()?.cancel()
-        withContext(Dispatchers.Main) { dialogRef.get()?.dismiss() }
+        val dialog =
+          MaterialAlertDialogBuilder(activity)
+            .setTitle(R.string.git_signing_card_title)
+            .setMessage(R.string.git_signing_confirm_message)
+            .setPositiveButton(R.string.git_signing_confirm_positive) { _, _ ->
+              choice.set(SigningChoice.SIGN)
+              latch.countDown()
+            }
+            .setNegativeButton(R.string.git_signing_confirm_unsigned) { _, _ ->
+              choice.set(SigningChoice.SKIP)
+              latch.countDown()
+            }
+            .setOnCancelListener { latch.countDown() }
+            .setCancelable(true)
+            .show()
+        dialog.setCanceledOnTouchOutside(true)
+        // Keep "Commit without signing" available but visually understated so it does not
+        // invite accidental taps over the primary "Sign" action.
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.let(::deemphasizeButton)
+      } catch (t: Throwable) {
+        error.set(t)
+        latch.countDown()
       }
     }
+    latch.await()
+    error.get()?.let { logcat { it.asLog() } }
+    return choice.get()
+  }
+
+  private fun deemphasizeButton(button: Button) {
+    button.setTextColor(
+      MaterialColors.getColor(button, com.google.android.material.R.attr.colorOnSurfaceVariant)
+    )
   }
 
   private fun findSecretSigningKey(key: PGPKey): PGPSecretKey {
@@ -265,45 +412,10 @@ class OpenPgpCommitSigner(
     return out.toByteArray()
   }
 
-  private fun askSecret(titleRes: Int, hintRes: Int): CharArray {
-    val result = AtomicReference<CharArray?>()
-    val latch = CountDownLatch(1)
-    activity.runOnUiThread {
-      val input = TextInputEditText(activity)
-      input.inputType =
-        InputType.TYPE_CLASS_TEXT or
-          InputType.TYPE_TEXT_VARIATION_PASSWORD or
-          InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-      val layout =
-        TextInputLayout(activity).apply {
-          hint = activity.getString(hintRes)
-          addView(input)
-        }
-      val dialog =
-        MaterialAlertDialogBuilder(activity)
-          .setTitle(titleRes)
-          .setView(layout)
-          .setPositiveButton(android.R.string.ok) { _, _ ->
-            val text = input.text
-            result.set(text?.let { CharArray(it.length) { index -> it[index] } } ?: charArrayOf())
-            text?.clear()
-            latch.countDown()
-          }
-          .setNegativeButton(R.string.dialog_cancel) { _, _ -> latch.countDown() }
-          .setOnCancelListener { latch.countDown() }
-          .show()
-      dialog.window?.setFlags(
-        WindowManager.LayoutParams.FLAG_SECURE,
-        WindowManager.LayoutParams.FLAG_SECURE,
-      )
-    }
-    latch.await()
-    return result.get() ?: throw CanceledException(activity.getString(R.string.dialog_cancel))
-  }
-
+  // The PIN is verified explicitly (see signWithSmartcard) before this builder runs, so it only has
+  // to compute the signature.
   private class CardContentSignerBuilder(
     private val publicKey: PGPPublicKey,
-    private val pin: CharArray,
     private val card: OpenPgpNfcCard,
   ) : PGPContentSignerBuilder {
 
@@ -322,7 +434,6 @@ class OpenPgpCommitSigner(
                 digestCalculator.digest,
               )
               .encoded
-          card.verifySignaturePin(pin)
           return card.computeDigitalSignature(
             digestInfo,
             expectedLength = (publicKey.bitStrength + 7) / 8,

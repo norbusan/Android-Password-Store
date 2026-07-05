@@ -10,19 +10,19 @@ import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.widget.Toast
 import androidx.core.content.edit
 import androidx.lifecycle.lifecycleScope
 import app.passwordstore.R
 import app.passwordstore.crypto.PGPIdentifier
 import app.passwordstore.crypto.errors.IncorrectPassphraseException
 import app.passwordstore.crypto.errors.NoDecryptionKeyAvailableException
-import app.passwordstore.crypto.errors.UnknownError
 import app.passwordstore.data.passfile.PasswordEntry
 import app.passwordstore.data.password.FieldItem
 import app.passwordstore.databinding.DecryptLayoutBinding
 import app.passwordstore.ui.adapters.FieldItemAdapter
 import app.passwordstore.util.crypto.AESEncryption
-import app.passwordstore.util.crypto.OpenPgpCardStatusException
+import app.passwordstore.util.crypto.OpenPgpCardPrompt
 import app.passwordstore.util.crypto.OpenPgpNfcCard
 import app.passwordstore.util.extensions.enableEdgeToEdgeView
 import app.passwordstore.util.extensions.getString
@@ -31,6 +31,7 @@ import app.passwordstore.util.extensions.toCharArray
 import app.passwordstore.util.extensions.viewBinding
 import app.passwordstore.util.extensions.wipe
 import app.passwordstore.util.settings.PreferenceKeys
+import app.passwordstore.util.shortcuts.ShortcutHandler
 import com.github.michaelbull.result.getError
 import com.github.michaelbull.result.getOrThrow
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -48,6 +49,7 @@ import kotlinx.coroutines.withContext
 class DecryptActivity : BasePGPActivity() {
 
   @Inject lateinit var passwordEntryFactory: PasswordEntry.Factory
+  @Inject lateinit var shortcutHandler: ShortcutHandler
 
   private var itemsAdapter: FieldItemAdapter? = null
   private val binding by viewBinding(DecryptLayoutBinding::inflate)
@@ -59,6 +61,14 @@ class DecryptActivity : BasePGPActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    // The entry may have been deleted since a launcher shortcut was created for it; bail out
+    // gracefully (and prune the stale shortcut) instead of crashing when we try to read the file.
+    if (!File(fullPath).exists()) {
+      Toast.makeText(this, R.string.password_no_longer_exists, Toast.LENGTH_LONG).show()
+      shortcutHandler.pruneDynamicShortcuts()
+      finish()
+      return
+    }
     supportActionBar?.setDisplayHomeAsUpEnabled(true)
     title = name
     with(binding) {
@@ -144,68 +154,146 @@ class DecryptActivity : BasePGPActivity() {
     identifiers: List<PGPIdentifier>,
     onSuccess: suspend (String) -> Unit,
   ) {
-    val pin = passphrases.values.firstOrNull()
-    if (pin == null) {
-      decrypt(identifiers, isError = true)
+    val messageBytes = withContext(dispatcherProvider.io()) { File(fullPath).readBytes() }
+    val outputStream = ByteArrayOutputStream()
+    // Same modern smartcard UX as commit signing: one persistent reader, a reused present/hold-card
+    // dialog, the card op run on the card's own thread, inline PIN entry with retries (so reader
+    // mode stays on across wrong PINs and never triggers the NDEF-URL popup), and reader mode
+    // released only once the card is physically removed.
+    val prompt = OpenPgpCardPrompt(this, R.string.openpgp_nfc_decrypt_title)
+    val reader = prompt.createReader()
+    if (reader == null) {
+      showSmartcardError(getString(R.string.openpgp_nfc_unavailable))
       return
     }
-    val progressDialog =
-      MaterialAlertDialogBuilder(this)
-        .setTitle(R.string.openpgp_nfc_decrypt_title)
-        .setMessage(R.string.openpgp_nfc_tap_card)
-        .setNegativeButton(R.string.dialog_cancel) { _, _ ->
-          OpenPgpNfcCard.disableReaderMode(this)
-          pin.wipe()
-          finish()
-        }
-        .setCancelable(false)
-        .show()
-    val message = withContext(dispatcherProvider.io()) { File(fullPath).readBytes().inputStream() }
-    val outputStream = ByteArrayOutputStream()
-    val results =
-      runCatching {
-          OpenPgpNfcCard.waitForCard(
-              this@DecryptActivity,
-              disableReaderModeOnError = false,
-              disableReaderModeOnClose = false,
+    // Namespaced so the decryption PIN cache is kept separate from the signing PIN cache.
+    val cacheKey = "decrypt:${identifiers.firstOrNull()}"
+    val presentMessage = getString(R.string.openpgp_nfc_tap_card)
+    // Seed the PIN from a caller-provided (e.g. biometric-unlocked) value, then the screen-off
+    // cache; otherwise prompt inline below.
+    var pin: CharArray? =
+      passphrases.values.firstOrNull()?.takeIf { it.isNotEmpty() } ?: prompt.readCachedPin(cacheKey)
+    var pinFromCache = pin != null
+    var cachePin = false
+    var pinErrorMessage: String? = null
+    var cardMessage = presentMessage
+    var readerHandedOff = false
+    try {
+      while (true) {
+        if (pin == null) {
+          prompt.dismissDialog()
+          val entry =
+            prompt.askSecret(
+              titleRes = R.string.openpgp_card_pin_title,
+              hintRes = R.string.openpgp_card_pin_hint,
+              showCacheOption = true,
+              errorMessage = pinErrorMessage,
             )
-            .use { card ->
-              repository.decryptWithSmartcard(pin, identifiers, message, outputStream, card)
+              ?: run {
+                finish()
+                return
+              }
+          pin = entry.secret
+          cachePin = entry.cache
+          pinFromCache = false
+          pinErrorMessage = null
+          cardMessage = presentMessage
+        }
+        val currentPin = requireNotNull(pin)
+        val attempt =
+          prompt.attempt(reader, cardMessage) { card ->
+            val results =
+              repository.decryptWithSmartcard(
+                currentPin,
+                identifiers,
+                messageBytes.inputStream(),
+                outputStream,
+                card,
+              )
+            // Surface a decryption failure (wrong PIN, transceive error, …) as a thrown exception
+            // so the prompt can classify it.
+            results.last().second.getError()?.let { throw it }
+            results
+          }
+        when (attempt) {
+          is OpenPgpCardPrompt.Attempt.Success -> {
+            // Cache the PIN only now that decryption actually succeeded.
+            if (!pinFromCache) prompt.storeCachedPin(cacheKey, currentPin, cachePin)
+            readerHandedOff = true
+            prompt.releaseReaderWhenCardRemoved(attempt.card, reader)
+            prompt.dismissDialog()
+            val lastResult = attempt.value.last()
+            val decryptedEntryBytes = lastResult.second.getOrThrow().toByteArray()
+            lastResult.second.getOrThrow().wipe()
+            val decryptedEntryChars = decryptedEntryBytes.toCharArray()
+            decryptedEntryBytes.wipe()
+            val entry = passwordEntryFactory.create(decryptedEntryChars)
+            encryptedEntryChars = AESEncryption.encrypt(decryptedEntryChars)
+            decryptedEntryChars.wipe()
+            entry.clearExtraChars()
+            createPasswordUI(entry)
+            onSuccess(lastResult.first)
+            return
+          }
+          OpenPgpCardPrompt.Attempt.Cancelled -> {
+            readerHandedOff = true
+            prompt.releaseReaderWhenCardRemoved(null, reader)
+            finish()
+            return
+          }
+          is OpenPgpCardPrompt.Attempt.Error -> {
+            val error = attempt.error
+            if (OpenPgpCardPrompt.isSmartcardPinFailure(error)) {
+              // A rejected PIN must never be kept in the cache; re-prompt inline with the card's
+              // own
+              // remaining-attempts count, keeping reader mode on the whole time.
+              prompt.clearCachedPin(cacheKey)
+              pin?.wipe()
+              pin = null
+              pinFromCache = false
+              val remaining = OpenPgpCardPrompt.smartcardPinRetriesRemaining(error)
+              if (remaining == 0) {
+                // Blocked: report in a dialog and hold reader mode until the card is lifted.
+                prompt.dismissDialog()
+                readerHandedOff = true
+                prompt.releaseReaderWhenCardRemoved(attempt.card, reader)
+                showSmartcardError(getString(R.string.openpgp_card_pin_blocked))
+                return
+              }
+              runCatching { attempt.card?.close() }
+              pinErrorMessage =
+                if (remaining != null) {
+                  resources.getQuantityString(
+                    R.plurals.openpgp_card_wrong_pin_remaining,
+                    remaining,
+                    remaining,
+                  )
+                } else {
+                  getString(R.string.openpgp_card_wrong_pin)
+                }
+              continue
             }
+            // A transient NFC/card hiccup (tag lost, transient 6A 80, …): ask the user to present
+            // the card again.
+            if (OpenPgpCardPrompt.isRetryableCardError(error)) {
+              runCatching { attempt.card?.close() }
+              cardMessage = getString(R.string.openpgp_nfc_card_comm_failed)
+              continue
+            }
+            // Any other terminal error: hold reader mode until the card is lifted, then report it.
+            prompt.dismissDialog()
+            readerHandedOff = true
+            prompt.releaseReaderWhenCardRemoved(attempt.card, reader)
+            showSmartcardError(friendlySmartcardError(error))
+            return
+          }
         }
-        .getOrElse {
-          progressDialog.dismiss()
-          showSmartcardError(friendlySmartcardError(it))
-          pin.wipe()
-          return
-        }
-    val lastResult = results.last()
-    progressDialog.dismiss()
-    if (lastResult.second.isOk) {
-      val decryptedEntryBytes = lastResult.second.getOrThrow().toByteArray()
-      lastResult.second.getOrThrow().wipe()
-      val decryptedEntryChars = decryptedEntryBytes.toCharArray()
-      decryptedEntryBytes.wipe()
-      val entry = passwordEntryFactory.create(decryptedEntryChars)
-      encryptedEntryChars = AESEncryption.encrypt(decryptedEntryChars)
-      decryptedEntryChars.wipe()
-      entry.clearExtraChars()
-      createPasswordUI(entry)
-      onSuccess(lastResult.first)
-    } else {
-      val error = lastResult.second.getError()
-      if (isSmartcardPinFailure(error)) {
-        passphrases.keys.forEach { id ->
-          cachedPassphrases[id]?.wipe()
-          cachedPassphrases.remove(id)
-        }
-        pin.wipe()
-        decrypt(identifiers, isError = true)
-        return
       }
-      showSmartcardError(friendlySmartcardError(error))
+    } finally {
+      pin?.wipe()
+      prompt.dismissDialog()
+      if (!readerHandedOff) prompt.releaseReaderWhenCardRemoved(null, reader)
     }
-    pin.wipe()
   }
 
   private fun showSmartcardError(message: String) {
@@ -213,7 +301,7 @@ class DecryptActivity : BasePGPActivity() {
       .setTitle(R.string.openpgp_nfc_decrypt_failed_title)
       .setMessage(message)
       .setPositiveButton(android.R.string.ok) { _, _ ->
-        OpenPgpNfcCard.disableReaderMode(this)
+        // Reader mode is disabled by the removal watcher once the card is lifted; just finish.
         finish()
       }
       .setCancelable(false)
@@ -221,21 +309,10 @@ class DecryptActivity : BasePGPActivity() {
   }
 
   private fun friendlySmartcardError(error: Throwable?): String =
-    if (isSmartcardPinFailure(error)) {
+    if (OpenPgpCardPrompt.isSmartcardPinFailure(error)) {
       resources.getString(R.string.openpgp_card_wrong_pin)
     } else {
       error?.message ?: resources.getString(R.string.password_decryption_unknown_error)
-    }
-
-  private fun isSmartcardPinFailure(error: Throwable?): Boolean =
-    when {
-      error == null -> false
-      error is OpenPgpCardStatusException && error.isAuthenticationFailure -> true
-      error is UnknownError && isSmartcardPinFailure(error.cause) -> true
-      error.message?.contains("69 82", ignoreCase = true) == true -> true
-      Regex("""63 c[0-9a-f]""", RegexOption.IGNORE_CASE).containsMatchIn(error.message.orEmpty()) ->
-        true
-      else -> isSmartcardPinFailure(error.cause)
     }
 
   override fun onCreateOptionsMenu(menu: Menu): Boolean {

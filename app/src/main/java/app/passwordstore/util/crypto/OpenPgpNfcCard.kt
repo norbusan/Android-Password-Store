@@ -15,6 +15,12 @@ import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 class OpenPgpNfcCard(
@@ -60,6 +66,20 @@ class OpenPgpNfcCard(
     val url = runCatching { transceive(GET_URL).toString(Charsets.UTF_8).trim() }.getOrNull()
     return OpenPgpCardInfo(fingerprints = fingerprints, url = url?.takeIf { it.isNotBlank() })
   }
+
+  /**
+   * Whether the card is still within the reader field. Actively probes with a benign read command
+   * rather than trusting [IsoDep.isConnected], whose cached presence state can stay `true` after
+   * the card has physically left the field. Uses a short transceive timeout so a removed card is
+   * reported quickly instead of blocking for the (long) signing timeout before throwing.
+   */
+  fun isPresent(): Boolean =
+    runCatching {
+        isoDep.timeout = PRESENCE_PROBE_TIMEOUT_MS
+        isoDep.transceive(GET_APPLICATION_RELATED_DATA)
+        true
+      }
+      .getOrDefault(false)
 
   override fun close() {
     runCatching { isoDep.close() }
@@ -151,6 +171,10 @@ class OpenPgpNfcCard(
   companion object {
     private const val MAX_APDU_NC = 254
 
+    // Short transceive timeout used only for presence probing, so a removed card fails fast instead
+    // of waiting out the multi-second signing timeout.
+    private const val PRESENCE_PROBE_TIMEOUT_MS = 200
+
     private fun encodeShortLe(expectedLength: Int): ByteArray =
       byteArrayOf(if (expectedLength >= 256) 0x00 else expectedLength.toByte())
 
@@ -218,6 +242,7 @@ class OpenPgpNfcCard(
       activity: Activity,
       disableReaderModeOnError: Boolean = true,
       disableReaderModeOnClose: Boolean = true,
+      onCardDetected: () -> Unit = {},
     ): OpenPgpNfcCard = suspendCancellableCoroutine { continuation ->
       val adapter = NfcAdapter.getDefaultAdapter(activity)
       if (adapter == null || !adapter.isEnabled) {
@@ -234,6 +259,7 @@ class OpenPgpNfcCard(
           val isoDep =
             IsoDep.get(tag)
               ?: throw IOException(activity.getString(R.string.openpgp_nfc_not_iso_dep))
+          activity.runOnUiThread { onCardDetected() }
           isoDep.connect()
           isoDep.timeout = 30_000
           val card =
@@ -243,12 +269,18 @@ class OpenPgpNfcCard(
               }
             }
           card.selectOpenPgpApplet()
-          continuation.resume(card)
+          if (continuation.isActive) {
+            continuation.resume(card)
+          } else {
+            card.close()
+          }
         } catch (e: Throwable) {
           if (disableReaderModeOnError) {
             activity.runOnUiThread { adapter.disableReaderMode(activity) }
           }
-          continuation.resumeWithException(e)
+          if (continuation.isActive) {
+            continuation.resumeWithException(e)
+          }
         }
       }
 
@@ -265,6 +297,46 @@ class OpenPgpNfcCard(
         if (completed.compareAndSet(false, true)) adapter.disableReaderMode(activity)
       }
     }
+
+    suspend fun waitForCardOrNull(
+      activity: Activity,
+      cancelSignal: Deferred<Unit>,
+      disableReaderModeOnError: Boolean = true,
+      disableReaderModeOnClose: Boolean = true,
+      onCardDetected: () -> Unit = {},
+    ): OpenPgpNfcCard? = coroutineScope {
+      val wait = async {
+        waitForCard(
+          activity,
+          disableReaderModeOnError,
+          disableReaderModeOnClose,
+          onCardDetected,
+        )
+      }
+      try {
+        select {
+          wait.onAwait { it }
+          cancelSignal.onAwait {
+            wait.cancel()
+            disableReaderMode(activity)
+            null
+          }
+        }
+      } finally {
+        if (!wait.isCompleted) wait.cancel()
+      }
+    }
+
+    fun isTransceiveFailure(error: Throwable?): Boolean {
+      var cause = error
+      while (cause != null) {
+        if (cause is IOException && cause.message?.contains("Transceive failed") == true) {
+          return true
+        }
+        cause = cause.cause
+      }
+      return false
+    }
   }
 }
 
@@ -275,7 +347,91 @@ class OpenPgpCardStatusException(val sw1: Int, val sw2: Int) :
   ) {
 
   val isAuthenticationFailure: Boolean
-    get() = sw1 == 0x69 && sw2 == 0x82 || sw1 == 0x63 && sw2 in 0xC0..0xCF
+    // 69 82: security status not satisfied, 69 83: authentication method blocked,
+    // 63 Cx: verification failed with x retries remaining.
+    get() = sw1 == 0x69 && (sw2 == 0x82 || sw2 == 0x83) || sw1 == 0x63 && sw2 in 0xC0..0xCF
+
+  /**
+   * Number of PIN attempts the card reports as still remaining, or `null` when the status word does
+   * not carry that information. `63 Cx` encodes the remaining tries in its low nibble; `69 83`
+   * (authentication method blocked) means none are left.
+   */
+  val retriesRemaining: Int?
+    get() =
+      when {
+        sw1 == 0x63 && sw2 in 0xC0..0xCF -> sw2 and 0x0F
+        sw1 == 0x69 && sw2 == 0x83 -> 0
+        else -> null
+      }
 }
 
 data class OpenPgpCardInfo(val fingerprints: List<ByteArray>, val url: String?)
+
+/**
+ * Keeps NFC reader mode enabled for the whole duration of a multi-step card operation (such as
+ * commit signing with PIN retries), so the platform never falls back to dispatching the card's NDEF
+ * URL between taps. Enable reader mode once via [create], await successive card presentations with
+ * [awaitCard], and [close] it exactly once (which disables reader mode) when finished.
+ */
+class CardReader
+private constructor(private val activity: Activity, private val adapter: NfcAdapter) :
+  AutoCloseable {
+
+  private val tags = Channel<Tag>(Channel.UNLIMITED)
+  private val closed = AtomicBoolean(false)
+  private val callback = NfcAdapter.ReaderCallback { tag -> tags.trySend(tag) }
+
+  init {
+    adapter.enableReaderMode(
+      activity,
+      callback,
+      NfcAdapter.FLAG_READER_NFC_A or
+        NfcAdapter.FLAG_READER_NFC_B or
+        NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK or
+        NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS,
+      Bundle().apply { putInt(NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY, 500) },
+    )
+  }
+
+  /**
+   * Suspends until an OpenPGP card is presented and its applet selected, transparently skipping
+   * past transient tag glitches (a card lifted mid-connect, a stale buffered tag, a non-ISO-DEP
+   * tag). [onCardDetected] is invoked once a card has connected. Throws
+   * [OpenPgpCardStatusException] only when the card actively rejects the applet selection.
+   */
+  suspend fun awaitCard(onCardDetected: () -> Unit): OpenPgpNfcCard {
+    while (true) {
+      val tag = tags.receive()
+      val isoDep = IsoDep.get(tag) ?: continue
+      try {
+        isoDep.connect()
+        isoDep.timeout = 30_000
+        onCardDetected()
+        val card = OpenPgpNfcCard(isoDep)
+        card.selectOpenPgpApplet()
+        return card
+      } catch (e: OpenPgpCardStatusException) {
+        runCatching { isoDep.close() }
+        throw e
+      } catch (e: Throwable) {
+        // Tag lost or a transient transport error: wait for the next presentation.
+        runCatching { isoDep.close() }
+      }
+    }
+  }
+
+  override fun close() {
+    if (closed.compareAndSet(false, true)) {
+      tags.close()
+      runCatching { adapter.disableReaderMode(activity) }
+    }
+  }
+
+  companion object {
+    fun create(activity: Activity): CardReader? {
+      val adapter = NfcAdapter.getDefaultAdapter(activity) ?: return null
+      if (!adapter.isEnabled) return null
+      return CardReader(activity, adapter)
+    }
+  }
+}

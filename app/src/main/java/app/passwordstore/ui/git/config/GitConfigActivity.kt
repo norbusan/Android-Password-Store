@@ -99,6 +99,9 @@ class GitConfigActivity : BaseGitActivity() {
       binding.gitResetToRemote.alpha = if (binding.gitResetToRemote.isEnabled) 1.0f else 0.5f
       binding.gitGc.isEnabled = binding.gitResetToRemote.isEnabled
       binding.gitGc.alpha = if (binding.gitGc.isEnabled) 1.0f else 0.5f
+      updateRemoveLockButton(repo)
+    } else {
+      updateRemoveLockButton(null)
     }
     binding.gitLog.setOnClickListener {
       runCatching { launchActivity(GitLogActivity::class.java) }
@@ -115,6 +118,25 @@ class GitConfigActivity : BaseGitActivity() {
           )
       }
     }
+    binding.gitRemoveLock.setOnClickListener { removeLockFile() }
+  }
+
+  private fun updateRemoveLockButton(repo: Repository? = PasswordRepository.repository) {
+    val canRemoveLock = repo?.directory?.resolve(GIT_INDEX_LOCK)?.isFile == true
+    binding.gitRemoveLock.isEnabled = canRemoveLock
+    binding.gitRemoveLock.alpha = if (canRemoveLock) 1.0f else 0.5f
+  }
+
+  private fun removeLockFile() {
+    val lockFile = PasswordRepository.repository?.directory?.resolve(GIT_INDEX_LOCK)
+    val messageRes =
+      when {
+        lockFile == null || !lockFile.isFile -> R.string.git_remove_lock_file_missing
+        lockFile.delete() -> R.string.git_remove_lock_file_success
+        else -> R.string.git_remove_lock_file_failed
+      }
+    Snackbar.make(binding.root, getString(messageRes), Snackbar.LENGTH_SHORT).show()
+    updateRemoveLockButton()
   }
 
   private fun resetToRemote() {
@@ -182,5 +204,9 @@ class GitConfigActivity : BaseGitActivity() {
         logcat(ERROR) { "Error getting HEAD reference\n${ex}" }
         getString(R.string.git_head_missing)
       }
+  }
+
+  companion object {
+    private const val GIT_INDEX_LOCK = "index.lock"
   }
 }

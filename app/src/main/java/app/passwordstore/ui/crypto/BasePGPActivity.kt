@@ -800,14 +800,14 @@ open class BasePGPActivity : AppCompatActivity() {
       identifiers.map { it.toString() }.contains(it)
     }
     lifecycleScope.launch(dispatcherProvider.main()) {
-      if (needsSmartcardPin(identifiers) && !isError && !passphrases.isEmpty()) {
+      if (needsSmartcardPin(identifiers)) {
+        // Smartcard PIN entry and retries are handled inline by the smartcard decrypt flow; just
+        // pass any cached (e.g. biometric-unlocked) PIN through for the first attempt.
         val decryptedCachedPins = passphrases.mapValues {
           AESEncryption.decrypt(it.value) ?: charArrayOf()
         }
         decryptWithPassphrase(decryptedCachedPins, identifiers)
         decryptedCachedPins.values.forEach { it.wipe() }
-      } else if (needsSmartcardPin(identifiers)) {
-        askPassphrase(isError = isError, identifiers)
       } else if (!repository.isPasswordProtected(identifiers) && !isError) {
         // try passphraseless decryption first
         decryptWithPassphrase(mapOf("" to null), identifiers)

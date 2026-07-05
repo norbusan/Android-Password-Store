@@ -28,6 +28,10 @@
     <item quantity="one">Are you sure you want to delete the selected item?</item>
     <item quantity="other">Are you sure you want to delete the %d selected items?</item>
   </plurals>
+  <plurals name="password_delete_success">
+    <item quantity="one">Successfully deleted password item.</item>
+    <item quantity="other">Successfully deleted password items.</item>
+  </plurals>
   <string name="delete_directory_progress_text">Deleting…</string>
   <string name="move">Move</string>
   <string name="edit">Edit</string>
@@ -48,7 +52,12 @@
   <string name="git_sign_commits">Sign Git commits with the store PGP key</string>
   <string name="git_signing_passphrase_title">PGP signing passphrase</string>
   <string name="git_signing_card_pin_title">OpenPGP card signing PIN</string>
+  <string name="git_signing_card_title">Sign with OpenPGP card</string>
+  <string name="git_signing_confirm_message">Sign this commit with the store OpenPGP key?</string>
+  <string name="git_signing_confirm_positive">Sign</string>
+  <string name="git_signing_confirm_unsigned">Don\'t sign</string>
   <string name="git_signing_tap_card">Present your OpenPGP smartcard to sign the commit.</string>
+  <string name="openpgp_nfc_card_comm_failed">Couldn\'t read the card. Present it again and hold it still until the operation finishes.</string>
   <string name="git_commit_signature_signed">Signed commit</string>
   <string name="git_commit_signature_unsigned">Unsigned commit</string>
 
@@ -338,6 +347,7 @@
   <string name="password_creation_file_encryption_failed_ids_message">\n\nEncryption failed for%1$s</string>
   <string name="password_creation_file_encryption_failed_expired_key">expired key</string>
   <string name="password_creation_file_write_fail_message">Failed to write password file to the store, please try again.</string>
+  <string name="password_creation_git_commit_failed_message">Password was saved, but Git commit failed:\n\n%1$s</string>
   <string name="password_creation_unusable_encryption_key_error_message">Encryption failure. Check expiration date and revocation status of the PGP key(s) using an external utility.</string>
   <string name="password_creation_no_keys_provided_message">No matching PGP keys found.</string>
   <string name="password_creation_duplicate_error">File already exists, please use a different name.</string>
@@ -356,6 +366,7 @@
   <!-- Password decryption failure -->
   <string name="password_decryption_no_decryption_key">Decryption failed. No suitable decryption key found</string>
   <string name="password_decryption_unknown_error">Unknown decryption error</string>
+  <string name="password_no_longer_exists">This password no longer exists.</string>
 
   <!-- GitException messages -->
   <string name="git_unknown_error">Unknown error</string>
@@ -414,6 +425,8 @@
   <string name="pgp_key_import_failed_replace_message">An existing key with the following ID was found:\n\n\t%1$s\n\nDo you want to replace it?</string>
   <string name="pgp_key_import_failed_unusable_message">The given key is not usable for encryption. Please ensure that a subkey for encryption exists and that it has not expired or been revoked.</string>
   <string name="openpgp_nfc_tap_card">Present your OpenPGP smartcard.</string>
+  <string name="openpgp_nfc_hold_card_title">Smartcard detected</string>
+  <string name="openpgp_nfc_hold_card">Keep the smartcard on your phone. Do not move it until this operation finishes.</string>
   <string name="openpgp_nfc_unavailable">NFC is unavailable or disabled.</string>
   <string name="openpgp_nfc_not_iso_dep">This NFC tag is not an ISO-DEP smartcard.</string>
   <string name="openpgp_nfc_setup_title">NFC smartcard setup</string>
@@ -427,6 +440,11 @@
   <string name="openpgp_card_pin_title">OpenPGP card PIN</string>
   <string name="openpgp_card_pin_hint">PIN</string>
   <string name="openpgp_card_wrong_pin">Wrong OpenPGP card PIN</string>
+  <plurals name="openpgp_card_wrong_pin_remaining">
+    <item quantity="one">Wrong PIN. %d attempt remaining before the card is blocked.</item>
+    <item quantity="other">Wrong PIN. %d attempts remaining before the card is blocked.</item>
+  </plurals>
+  <string name="openpgp_card_pin_blocked">The OpenPGP card signing PIN is blocked. Reset it with an external tool before signing again.</string>
   <string name="cache_openpgp_card_pin_until_screen_off">Keep PIN until screen-off</string>
   <string name="openpgp_nfc_decrypt_title">Decrypt with OpenPGP card</string>
   <string name="openpgp_nfc_decrypt_failed_title">OpenPGP card decryption failed</string>
@@ -470,6 +488,11 @@
   <string name="pref_category_pgp_title">PGP settings</string>
   <string name="pwgen_some_error_occurred">Some error occurred.</string>
   <string name="git_run_gc_job">Run garbage collection job</string>
+  <string name="git_remove_lock_file">Remove stale Git lock file</string>
+  <string name="git_remove_lock_file_success">Removed stale Git lock file.</string>
+  <string name="git_remove_lock_file_missing">No stale Git lock file was found.</string>
+  <string name="git_remove_lock_file_failed">Failed to remove stale Git lock file.</string>
+  <string name="git_index_locked_error">A previous Git operation left a lock file behind. Remove the stale Git lock file from the Git configuration, then try again.</string>
   <string name="activity_label_pgp_key_manager">PGP key manager</string>
   <string name="activity_label_pgp_key_select">Select one or more PGP keys</string>
   <string name="activity_label_pgp_key_single_select">Choose a PGP key</string>

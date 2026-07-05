@@ -67,6 +67,7 @@ class OpenPgpSmartcardDecryptor @Inject constructor() {
         try {
           candidate to candidate.getSessionKey(decryptorFactory)
         } catch (e: Throwable) {
+          if (OpenPgpNfcCard.isTransceiveFailure(e)) throw e
           if (e.isCardAuthenticationFailure()) throw e
           if (firstFailure == null) firstFailure = e as? Exception
           null
