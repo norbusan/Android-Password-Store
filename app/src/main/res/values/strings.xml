@@ -439,8 +439,8 @@
   <string name="openpgp_nfc_fingerprint_mismatch">The imported key does not match the fingerprints reported by the OpenPGP card.</string>
   <string name="openpgp_card_pin_title">OpenPGP card PIN</string>
   <string name="openpgp_card_pin_hint">PIN</string>
+  <string name="openpgp_card_pin_min_length">At least %1$d characters</string>
   <string name="openpgp_card_wrong_pin">Wrong OpenPGP card PIN</string>
-  <string name="openpgp_card_pin_not_accepted">PIN not accepted — check its length (the card enforces a minimum and maximum). Your remaining attempts are unaffected.</string>
   <plurals name="openpgp_card_wrong_pin_remaining">
     <item quantity="one">Wrong PIN. %d attempt remaining before the card is blocked.</item>
     <item quantity="other">Wrong PIN. %d attempts remaining before the card is blocked.</item>

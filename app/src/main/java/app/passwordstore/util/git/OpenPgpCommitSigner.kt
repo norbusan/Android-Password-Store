@@ -204,6 +204,7 @@ class OpenPgpCommitSigner(
                 hintRes = R.string.openpgp_card_pin_hint,
                 showCacheOption = true,
                 errorMessage = pinErrorMessage,
+                minLength = OpenPgpCardPrompt.MIN_PIN_LENGTH,
               )
             } ?: throw CanceledException(activity.getString(R.string.dialog_cancel))
           pin = entry.secret
@@ -254,35 +255,30 @@ class OpenPgpCommitSigner(
               pin?.wipe()
               pin = null
               pinFromCache = false
-              val isFormatError = OpenPgpCardPrompt.isSmartcardPinFormatError(e)
               // Trust the card's own retry counter rather than tracking attempts in the app; if it
-              // didn't put the count in 63 Cx, ask it directly with a non-destructive status check.
-              // A length rejection never touches the counter, so there's nothing to query for it.
+              // didn't put the count in 63 Cx, ask it directly with a non-destructive status check
+              // so we learn the real state (in particular whether the card is now blocked) even
+              // after a status word that omits it (69 82, a 6A 80 length/format rejection, …).
               val remaining =
                 OpenPgpCardPrompt.smartcardPinRetriesRemaining(e)
-                  ?: if (!isFormatError) {
-                    runCatching { attempt.card?.readSignaturePinRetries() }.getOrNull()
-                  } else {
-                    null
-                  }
+                  ?: runCatching { attempt.card?.readSignaturePinRetries() }.getOrNull()
               if (remaining == 0) {
                 // Blocked: hold reader mode until the card is lifted, then abort — the outer catch
-                // reports it in a dialog.
+                // reports it in a dialog. Stop asking for a PIN.
                 readerHandedOff = true
                 prompt.releaseReaderWhenCardRemoved(attempt.card, activeReader)
                 throw PGPException(activity.getString(R.string.openpgp_card_pin_blocked))
               }
               runCatching { attempt.card?.close() }
               pinErrorMessage =
-                when {
-                  isFormatError -> activity.getString(R.string.openpgp_card_pin_not_accepted)
-                  remaining != null ->
-                    activity.resources.getQuantityString(
-                      R.plurals.openpgp_card_wrong_pin_remaining,
-                      remaining,
-                      remaining,
-                    )
-                  else -> activity.getString(R.string.openpgp_card_wrong_pin)
+                if (remaining != null) {
+                  activity.resources.getQuantityString(
+                    R.plurals.openpgp_card_wrong_pin_remaining,
+                    remaining,
+                    remaining,
+                  )
+                } else {
+                  activity.getString(R.string.openpgp_card_wrong_pin)
                 }
               continue
             }

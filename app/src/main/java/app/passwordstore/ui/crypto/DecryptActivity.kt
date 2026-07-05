@@ -188,6 +188,7 @@ class DecryptActivity : BasePGPActivity() {
               hintRes = R.string.openpgp_card_pin_hint,
               showCacheOption = true,
               errorMessage = pinErrorMessage,
+              minLength = OpenPgpCardPrompt.MIN_PIN_LENGTH,
             )
               ?: run {
                 finish()
@@ -251,22 +252,18 @@ class DecryptActivity : BasePGPActivity() {
               pin?.wipe()
               pin = null
               pinFromCache = false
-              val isFormatError = OpenPgpCardPrompt.isSmartcardPinFormatError(error)
               // Prefer the count the card volunteered in 63 Cx; otherwise ask it directly with a
-              // non-destructive status check so the remaining tries can still be shown after a
-              // status word that omits them (69 82, …). A length rejection never touches the
-              // counter, so there's nothing to query for it.
+              // non-destructive status check, so we learn the real state even after a status word
+              // that omits it (69 82, a 6A 80 length/format rejection, …) — in particular whether
+              // the card is now blocked.
               val remaining =
                 OpenPgpCardPrompt.smartcardPinRetriesRemaining(error)
-                  ?: if (!isFormatError) {
-                    withContext(dispatcherProvider.io()) {
-                      runCatching { attempt.card?.readUserPinRetries() }.getOrNull()
-                    }
-                  } else {
-                    null
+                  ?: withContext(dispatcherProvider.io()) {
+                    runCatching { attempt.card?.readUserPinRetries() }.getOrNull()
                   }
               if (remaining == 0) {
-                // Blocked: report in a dialog and hold reader mode until the card is lifted.
+                // Blocked: report in a dialog, hold reader mode until the card is lifted, and stop
+                // asking for a PIN.
                 prompt.dismissDialog()
                 readerHandedOff = true
                 prompt.releaseReaderWhenCardRemoved(attempt.card, reader)
@@ -275,15 +272,14 @@ class DecryptActivity : BasePGPActivity() {
               }
               runCatching { attempt.card?.close() }
               pinErrorMessage =
-                when {
-                  isFormatError -> getString(R.string.openpgp_card_pin_not_accepted)
-                  remaining != null ->
-                    resources.getQuantityString(
-                      R.plurals.openpgp_card_wrong_pin_remaining,
-                      remaining,
-                      remaining,
-                    )
-                  else -> getString(R.string.openpgp_card_wrong_pin)
+                if (remaining != null) {
+                  resources.getQuantityString(
+                    R.plurals.openpgp_card_wrong_pin_remaining,
+                    remaining,
+                    remaining,
+                  )
+                } else {
+                  getString(R.string.openpgp_card_wrong_pin)
                 }
               continue
             }

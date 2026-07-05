@@ -11,6 +11,7 @@ import android.view.WindowManager
 import androidx.annotation.StringRes
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.edit
+import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import app.passwordstore.R
@@ -161,13 +162,16 @@ class OpenPgpCardPrompt(
    * Prompts the user for a card PIN (or passphrase). When [showCacheOption] is true the dialog
    * offers a "keep until screen-off" checkbox; the caller decides whether to actually cache via
    * [storeCachedPin]. [errorMessage] is reported inline on the field (e.g. "Wrong PIN, N tries
-   * left"). Returns `null` if the user cancels.
+   * left"). When [minLength] is > 0 the confirm button stays disabled until at least that many
+   * characters are entered (the OpenPGP card spec mandates a 6-character minimum PIN). Returns
+   * `null` if the user cancels.
    */
   suspend fun askSecret(
     @StringRes titleRes: Int,
     @StringRes hintRes: Int,
     showCacheOption: Boolean = false,
     errorMessage: String? = null,
+    minLength: Int = 0,
   ): SecretEntry? {
     if (activity.isFinishing || activity.isDestroyed) return null
     val showCache = showCacheOption && AESEncryption.isHardwareBacked()
@@ -201,7 +205,24 @@ class OpenPgpCardPrompt(
             .setNegativeButton(R.string.dialog_cancel) { _, _ -> result.complete(null) }
             .setOnCancelListener { result.complete(null) }
             .show()
-        if (errorMessage != null) binding.passwordField.error = errorMessage
+        // The error and the min-length hint share the caption area below the field, and the error
+        // (e.g. "Wrong PIN, N left") takes priority; only fall back to the hint when there is none.
+        when {
+          errorMessage != null -> binding.passwordField.error = errorMessage
+          minLength > 0 ->
+            binding.passwordField.helperText =
+              activity.getString(R.string.openpgp_card_pin_min_length, minLength)
+        }
+        if (minLength > 0) {
+          // Enforce the minimum PIN length by keeping the confirm button disabled until enough
+          // characters are entered.
+          val okButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+          val updateOkEnabled = {
+            okButton.isEnabled = (binding.passwordEditText.text?.length ?: 0) >= minLength
+          }
+          updateOkEnabled()
+          binding.passwordEditText.doAfterTextChanged { updateOkEnabled() }
+        }
         dialog.window?.setFlags(
           WindowManager.LayoutParams.FLAG_SECURE,
           WindowManager.LayoutParams.FLAG_SECURE,
@@ -293,6 +314,9 @@ class OpenPgpCardPrompt(
   }
 
   companion object {
+    /** The minimum PW1 (user/signing) PIN length mandated by the OpenPGP Card specification. */
+    const val MIN_PIN_LENGTH = 6
+
     private const val READER_MODE_RELEASE_TIMEOUT_MS = 30_000L
     private const val READER_MODE_POLL_INTERVAL_MS = 300L
     private val PIN_FAILURE_REGEX = Regex("""63 c[0-9a-f]""", RegexOption.IGNORE_CASE)
@@ -311,20 +335,6 @@ class OpenPgpCardPrompt(
         if (message.contains("69 82", ignoreCase = true)) return true
         if (message.contains("69 83", ignoreCase = true)) return true
         if (PIN_FAILURE_REGEX.containsMatchIn(message)) return true
-        cause = cause.cause
-      }
-      return false
-    }
-
-    /**
-     * Whether [error] is a PIN the card rejected for its length/format (see
-     * [SmartcardPinFormatException]) — distinct from a plain wrong PIN, and not counted against the
-     * retry counter.
-     */
-    fun isSmartcardPinFormatError(error: Throwable?): Boolean {
-      var cause = error
-      while (cause != null) {
-        if (cause is SmartcardPinFormatException) return true
         cause = cause.cause
       }
       return false
