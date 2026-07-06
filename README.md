@@ -1,12 +1,25 @@
 # Password Store
 
-[![GitHub workflow](https://github.com/agrahn/Android-Password-Store/workflows/Deploy%20snapshot%20builds/badge.svg)](https://github.com/agrahn/Android-Password-Store/actions)
+[![GitHub workflow](https://github.com/valasiadis/Android-Password-Store/workflows/Deploy%20snapshot%20builds/badge.svg)](https://github.com/valasiadis/Android-Password-Store/actions)
+
+
+> [!WARNING]  
+> This repository is a fork of
+> [agrahn/Android-Password-Store](https://github.com/valasiadis/Android-Password-Store) that
+> implements hardware security support, commit signing and some UX improvements. The features were
+> implemented with heavy help of generative AI (Claude Opus 4.8 and some OpenAI GPT-5.5). As soon as
+> I can spare some time, I will more thoroughly review the code with the goal of eventually merging
+> it upstream. For app signature verification reasons, I changed the app ID to 
+> `app.passwordstore.valasiadis`. I also will keep this repo up-to-date with agrahn's version until
+> it's merged. If you do use this version of the app in the meantime, reproducible bug reports and
+> other suggestions would help incredibly.
 
 ## Download
 
-- Latest [snapshot build (APK)](https://github.com/agrahn/Android-Password-Store/releases/tag/latest) of this fork
-- [GitHub Releases](https://github.com/agrahn/Android-Password-Store/releases)
-- [<img src="https://f-droid.org/assets/fdroid-logo-text_S0MUfk_FsnAYL7n2MQye-34IoSNm6QM6xYjDnMqkufo=.svg" height="32px"/>](https://f-droid.org/en/packages/app.passwordstore.agrahn)
+- Latest [snapshot build (APK)](https://github.com/valasiadis/Android-Password-Store/releases/tag/latest) of this fork
+- [GitHub Releases](https://github.com/valasiadis/Android-Password-Store/releases)
+
+You can install this app via [Obtainium](https://obtainium.imranr.dev/) too.
 
 ## Documentation
 
