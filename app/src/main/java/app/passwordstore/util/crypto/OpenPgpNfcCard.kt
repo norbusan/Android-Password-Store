@@ -24,6 +24,9 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.suspendCancellableCoroutine
+import logcat.LogPriority.WARN
+import logcat.asLog
+import logcat.logcat
 
 class OpenPgpNfcCard(
   private val isoDep: IsoDep,
@@ -265,7 +268,15 @@ class OpenPgpNfcCard(
     }
 
     fun disableReaderMode(activity: Activity) {
-      NfcAdapter.getDefaultAdapter(activity)?.disableReaderMode(activity)
+      val adapter = NfcAdapter.getDefaultAdapter(activity) ?: return
+      try {
+        adapter.disableReaderMode(activity)
+      } catch (e: IllegalStateException) {
+        // NfcAdapter.disableReaderMode throws "activity is already destroyed" when it runs as an
+        // onDestroy() cleanup (the platform has already torn down the activity's NFC state, so
+        // reader mode is gone anyway). Swallow it so finishing the activity never crashes.
+        logcat(WARN) { e.asLog() }
+      }
     }
 
     suspend fun waitForCard(
@@ -295,7 +306,7 @@ class OpenPgpNfcCard(
           val card =
             OpenPgpNfcCard(isoDep) {
               if (disableReaderModeOnClose) {
-                activity.runOnUiThread { adapter.disableReaderMode(activity) }
+                activity.runOnUiThread { disableReaderMode(activity) }
               }
             }
           card.selectOpenPgpApplet()
@@ -306,7 +317,7 @@ class OpenPgpNfcCard(
           }
         } catch (e: Throwable) {
           if (disableReaderModeOnError) {
-            activity.runOnUiThread { adapter.disableReaderMode(activity) }
+            activity.runOnUiThread { disableReaderMode(activity) }
           }
           if (continuation.isActive) {
             continuation.resumeWithException(e)
@@ -324,7 +335,7 @@ class OpenPgpNfcCard(
         Bundle().apply { putInt(NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY, 500) },
       )
       continuation.invokeOnCancellation {
-        if (completed.compareAndSet(false, true)) adapter.disableReaderMode(activity)
+        if (completed.compareAndSet(false, true)) disableReaderMode(activity)
       }
     }
 

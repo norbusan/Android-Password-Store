@@ -175,6 +175,7 @@ class OpenPgpCardPrompt(
     showCacheOption: Boolean = false,
     errorMessage: String? = null,
     minLength: Int = 0,
+    identityLabel: String? = null,
   ): SecretEntry? {
     if (activity.isFinishing || activity.isDestroyed) return null
     val showCache = showCacheOption && AESEncryption.isHardwareBacked()
@@ -185,6 +186,11 @@ class OpenPgpCardPrompt(
       try {
         val binding = DialogPasswordEntryBinding.inflate(activity.layoutInflater)
         binding.passwordField.setHint(hintRes)
+        // Tell the user which key/card this PIN unlocks.
+        identityLabel?.let {
+          binding.userIdList.text = it
+          binding.userIdList.visibility = View.VISIBLE
+        }
         binding.passwordEditText.inputType =
           InputType.TYPE_CLASS_TEXT or
             InputType.TYPE_TEXT_VARIATION_PASSWORD or

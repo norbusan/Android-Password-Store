@@ -428,11 +428,22 @@ open class BasePGPActivity : AppCompatActivity() {
     return gpgIdentifiers
   }
 
-  private fun getEmailsFromIdentifiers(identifiers: List<PGPIdentifier>): String? {
-    val emails = identifiers.map { repository.getEmailFromKeyId(it) }.filterNotNull().distinct()
-    if (emails.isEmpty()) return null
-    val label = if (emails.size > 1) R.string.pgp_id_label_plural else R.string.pgp_id_label
-    return "${resources.getString(label)} ${emails.joinToString(", ")}"
+  /**
+   * Builds a short label naming the key(s) a passphrase/PIN is being requested for, so the prompt
+   * makes clear which key is being unlocked. Shows the key's user ID exactly as the key list does,
+   * falling back to the email and then the key ID so the label is never empty for a known key.
+   */
+  protected fun getIdentityLabelForIdentifiers(identifiers: List<PGPIdentifier>): String? {
+    if (identifiers.isEmpty()) return null
+    return identifiers
+      .map { id ->
+        repository.getUserIdFromKeyId(id)?.takeIf { it.isNotBlank() && it != "null" }
+          ?: repository.getEmailFromKeyId(id)
+          ?: repository.getLongKeyIdFromKeyId(id)
+          ?: id.toString()
+      }
+      .distinct()
+      .joinToString(", ")
   }
 
   protected fun needsSmartcardPin(identifiers: List<PGPIdentifier>): Boolean = identifiers.any {
@@ -467,7 +478,7 @@ open class BasePGPActivity : AppCompatActivity() {
     val dialog =
       if (needsSmartcardPin) {
         PasswordDialog.newInstance(
-          getEmailsFromIdentifiers(identifiers),
+          getIdentityLabelForIdentifiers(identifiers),
           cacheOptionVisible = true,
           titleRes = R.string.openpgp_card_pin_title,
           hintRes = R.string.openpgp_card_pin_hint,
@@ -475,7 +486,10 @@ open class BasePGPActivity : AppCompatActivity() {
           cacheLabelRes = R.string.cache_openpgp_card_pin_until_screen_off,
         )
       } else {
-        PasswordDialog.newInstance(getEmailsFromIdentifiers(identifiers), cacheOptionVisible = true)
+        PasswordDialog.newInstance(
+          getIdentityLabelForIdentifiers(identifiers),
+          cacheOptionVisible = true,
+        )
       }
     if (isError) dialog.setError()
     dialog.show(supportFragmentManager, "PASSWORD_DIALOG")

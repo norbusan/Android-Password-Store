@@ -191,6 +191,7 @@ class DecryptActivity : BasePGPActivity() {
               showCacheOption = true,
               errorMessage = pinErrorMessage,
               minLength = OpenPgpCardPrompt.MIN_PIN_LENGTH,
+              identityLabel = getIdentityLabelForIdentifiers(identifiers),
             )
               ?: run {
                 finish()

@@ -133,6 +133,7 @@ class OpenPgpCommitSigner(
             .askSecret(
               titleRes = R.string.git_signing_passphrase_title,
               hintRes = R.string.ssh_keygen_passphrase,
+              identityLabel = identityLabel(key),
             )
         }
         ?.secret ?: throw CanceledException(activity.getString(R.string.dialog_cancel))
@@ -210,6 +211,7 @@ class OpenPgpCommitSigner(
                 showCacheOption = true,
                 errorMessage = pinErrorMessage,
                 minLength = OpenPgpCardPrompt.MIN_PIN_LENGTH,
+                identityLabel = identityLabel(key),
               )
             } ?: throw CanceledException(activity.getString(R.string.dialog_cancel))
           pin = entry.secret
@@ -367,6 +369,11 @@ class OpenPgpCommitSigner(
       MaterialColors.getColor(button, materialR.attr.colorOnSurfaceVariant)
     )
   }
+
+  /** Short label naming the signing key, so the passphrase/PIN prompt shows which key it unlocks. */
+  private fun identityLabel(key: PGPKey): String? =
+    KeyUtils.tryGetUserId(key)?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+      ?: KeyUtils.tryGetKeyId(key)?.toString()
 
   private fun findSecretSigningKey(key: PGPKey): PGPSecretKey {
     val rings =
