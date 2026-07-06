@@ -9,10 +9,11 @@
 > implements hardware security support, commit signing and some UX improvements. The features were
 > implemented with heavy assistance from generative AI (Claude Opus 4.8 and some OpenAI GPT-5.5). As
 > soon as I can spare some time, I will more thoroughly review the code with the goal of eventually
-> merging it upstream. For app signature verification reasons, I changed the app ID to 
-> `app.passwordstore.valasiadis`. I will also keep this repo up-to-date with agrahn's version until
-> the code is merged. If you use this version of the app in the meantime, reproducible bug reports
-> and other suggestions would be incredibly helpful.
+> merging it upstream. I changed the app ID to `app.passwordstore.valasiadis` for compatibility
+> reasons and the app icon color so that the app isn't confused with agrahn's. I will also
+> keep this repo up-to-date with agrahn's version until the code is merged. If you use this version
+> of the app in the meantime, reproducible bug reports and other suggestions would be incredibly
+> helpful.
 
 ## Download
 
