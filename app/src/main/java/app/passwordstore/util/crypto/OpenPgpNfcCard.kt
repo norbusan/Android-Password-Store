@@ -93,6 +93,17 @@ class OpenPgpNfcCard(
     return transceiveData(0x2A, 0x9E, 0x9A, digestInfo, expectedLength)
   }
 
+  /**
+   * Runs INTERNAL AUTHENTICATE (INS 0x88) with the card's Authentication key over [input] and
+   * returns the raw signature. Unlike PSO:CDS (used for OpenPGP signatures), this uses the
+   * Authentication key slot and requires PW1 verified in mode 0x82 (see [verifyUserPin]). Used for
+   * SSH public-key authentication.
+   */
+  fun internalAuthenticate(input: ByteArray): ByteArray {
+    // Le = 0 → request up to 256 bytes; longer responses (e.g. RSA) are pulled in via 61xx chaining.
+    return transceiveData(0x88, 0x00, 0x00, input, expectedLength = 0)
+  }
+
   fun readCardInfo(): OpenPgpCardInfo {
     val applicationData = transceive(GET_APPLICATION_RELATED_DATA)
     val fingerprints = findTlv(applicationData, 0xC5)?.let(::parseFingerprints).orEmpty()

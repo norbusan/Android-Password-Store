@@ -25,6 +25,13 @@ import org.pgpainless.key.info.KeyRingInfo
 public object KeyUtils {
 
   /**
+   * Key-usage flags that make a (sub)key usable for authentication, in preference order: a dedicated
+   * Authentication subkey first, then a Signing subkey, then the primary Certification key.
+   */
+  private val AUTH_CAPABILITY_RANKING =
+    listOf(KeyFlags.AUTHENTICATION, KeyFlags.SIGN_DATA, KeyFlags.CERTIFY_OTHER)
+
+  /**
    * Attempts to parse an [OpenPGPCertificate] from a given [PGPKey]. The key is first tried as a
    * secret keyring and then as a public one before the method gives up and returns null.
    */
@@ -175,59 +182,52 @@ public object KeyUtils {
         .filter { it.isEncryptionKey() }
         .all { it.getPGPSecretKey().isPrivateKeyEmpty() }
 
-  /** Tests if the given [PGPKey] provides an authentication-capable secret subkey */
+  /** Tests if the given [PGPKey] provides an authentication-capable (sub)key. */
   public fun hasAuthKey(key: PGPKey): Boolean =
     tryParseCertificateOrKey(key)?.let { hasAuthKey(it) } ?: false
 
-  /** Tests if the given [OpenPGPCertificate] provides an authentication-capable secret subkey */
-  public fun hasAuthKey(cert: OpenPGPCertificate): Boolean {
-    if (cert !is OpenPGPKey) return false
-    val authFlags = listOf(KeyFlags.AUTHENTICATION, KeyFlags.SIGN_DATA, KeyFlags.CERTIFY_OTHER)
-    val subkeys = cert.getSecretKeys().values
-    val authKeys =
-      authFlags
-        .map { flag ->
-          subkeys
-            .filter { it.hasKeyFlags(Date(), flag) && !it.getPGPSecretKey().isPrivateKeyEmpty() }
-            .firstOrNull()
-        }
-        .filterNotNull()
-    return authKeys.isNotEmpty()
-  }
+  /**
+   * Tests if the given [OpenPGPCertificate] provides an authentication-capable (sub)key.
+   *
+   * This inspects the certificate's *public* component keys, so it works for a public-only
+   * certificate and for a smartcard-backed key whose private half lives on the card (a stub with
+   * empty private material) — in both cases the key is still authentication-capable (the card, or a
+   * private key held elsewhere, does the actual signing).
+   */
+  public fun hasAuthKey(cert: OpenPGPCertificate): Boolean =
+    AUTH_CAPABILITY_RANKING.any { flag ->
+      cert.getComponentKeysWithFlag(Date(), flag).isNotEmpty()
+    }
 
   /**
-   * Parse the public part of the first authentication-capable subkey from [OpenPGPCertificate] or
+   * Parse the public part of the first authentication-capable (sub)key from [OpenPGPCertificate] or
    * null if none was found
    */
   public fun extractPublicAuthKey(key: PGPKey): PublicKey? =
     tryParseCertificateOrKey(key)?.let { extractPublicAuthKey(it) } ?: null
 
   /**
-   * Parse the public part of the first authentication-capable subkey from [OpenPGPCertificate] or
-   * null if none was found, the returned key format is java.security.PublicKey, as used by sshj
+   * Parse the public part of the first authentication-capable (sub)key from [OpenPGPCertificate] or
+   * null if none was found, the returned key format is java.security.PublicKey, as used by sshj.
+   *
+   * Only the public half is needed here (it becomes the SSH public key), so this reads the
+   * certificate's *public* component keys. That makes it work for public-only certificates and for
+   * smartcard-backed stubs (empty private material) alike — the private authentication operation
+   * happens later, on the card.
    */
   public fun extractPublicAuthKey(cert: OpenPGPCertificate): PublicKey? {
-    if (cert !is OpenPGPKey) return null
+    // A and S subkeys as well as the primary C key are equally suitable for authentication; pick the
+    // newest key matching one of the capabilities in the given ranking order.
+    val authKey =
+      AUTH_CAPABILITY_RANKING.firstNotNullOfOrNull { flag ->
+        cert
+          .getComponentKeysWithFlag(Date(), flag)
+          .maxByOrNull { it.getCreationTime() } // newest first
+      } ?: return null
 
-    /* A and S subkeys as well as the primary C key are equally suitable for authentication;
-     * we pick the first subkey matching one of the capabilities in the given ranking order: */
-    val authFlags = listOf(KeyFlags.AUTHENTICATION, KeyFlags.SIGN_DATA, KeyFlags.CERTIFY_OTHER)
-    val subkeys =
-      cert.getSecretKeys().values.sortedByDescending { it.getCreationTime() } // newest first
-    val authKeys =
-      authFlags
-        .map { flag ->
-          subkeys
-            .filter { it.hasKeyFlags(Date(), flag) && !it.getPGPSecretKey().isPrivateKeyEmpty() }
-            .firstOrNull()
-        }
-        .filterNotNull()
-
-    return if (authKeys.isEmpty()) null
-    else
-      JcaPGPKeyConverter()
-        .setProvider(BouncyCastleProvider())
-        .getPublicKey(authKeys.first().getPGPSecretKey().getPublicKey())
+    return JcaPGPKeyConverter()
+      .setProvider(BouncyCastleProvider())
+      .getPublicKey(authKey.getPGPPublicKey())
   }
 
   public fun extractPublicKeyData(key: PGPKey): ByteArray? =

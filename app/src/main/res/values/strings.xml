@@ -450,6 +450,7 @@
   <string name="openpgp_card_pin_blocked">The OpenPGP card signing PIN is blocked. Reset it with an external tool before signing again.</string>
   <string name="cache_openpgp_card_pin_until_screen_off">Keep PIN until screen-off</string>
   <string name="openpgp_nfc_decrypt_title">Decrypt with OpenPGP card</string>
+  <string name="openpgp_nfc_ssh_title">SSH authentication with OpenPGP card</string>
   <string name="openpgp_nfc_decrypt_failed_title">OpenPGP card decryption failed</string>
   <string name="pgp_key_import_skipped_existing">Key already exists (replacement skipped)</string>
   <plurals name="pgp_key_import_success_title">
