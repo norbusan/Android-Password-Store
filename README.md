@@ -19,7 +19,8 @@
 - Latest [snapshot build (APK)](https://github.com/valasiadis/Android-Password-Store/releases/tag/latest) of this fork
 - [GitHub Releases](https://github.com/valasiadis/Android-Password-Store/releases)
 
-You can install this app via [Obtainium](https://obtainium.imranr.dev/) too.
+You can install this app via [Obtainium](https://obtainium.imranr.dev/) too. You just need to check `Include prereleases`
+under the `Additional options for GitHub` section.
 
 ## Documentation
 
