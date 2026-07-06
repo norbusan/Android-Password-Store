@@ -90,6 +90,18 @@ constructor(
     return key != null && KeyUtils.hasAuthKey(key)
   }
 
+  fun hasPrivateAuthKey(id: PGPIdentifier): Boolean {
+    val key = pgpKeyManager.getKeyById(id).get()
+    return key != null && KeyUtils.hasPrivateAuthKey(key)
+  }
+
+  /**
+   * Whether [id] can be used as an SSH authentication key: either it can sign locally (has a private
+   * authentication subkey) or its authentication is delegated to an associated smartcard.
+   */
+  fun canUseForSshAuth(id: PGPIdentifier): Boolean =
+    hasPrivateAuthKey(id) || (isSmartcardBacked(id) && hasAuthKey(id))
+
   fun isPasswordProtected(identifiers: List<PGPIdentifier>, anySubkey: Boolean = false): Boolean {
     val keys = identifiers.map { pgpKeyManager.getKeyById(it) }.filterOk()
     return pgpCryptoHandler.isPassphraseProtected(keys, anySubkey)

@@ -223,6 +223,10 @@ class PGPKeyListActivity : AppCompatActivity() {
                 }
               } else null,
             singleSelection = singleSelection,
+            // Selecting an SSH authentication key (single-selection mode): grey out keys that can't
+            // authenticate — public-only keys, and stubs without an associated smartcard.
+            isKeyEnabled =
+              if (singleSelection) cryptoRepository::canUseForSshAuth else { { true } },
           )
         }
       }

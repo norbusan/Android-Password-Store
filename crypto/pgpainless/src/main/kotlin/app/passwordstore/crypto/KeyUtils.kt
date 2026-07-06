@@ -200,6 +200,23 @@ public object KeyUtils {
     }
 
   /**
+   * Tests if the given [PGPKey] provides an authentication-capable secret subkey whose private key
+   * is present locally (i.e. can sign without a smartcard). Used to decide whether a key can be used
+   * for SSH authentication on its own.
+   */
+  public fun hasPrivateAuthKey(key: PGPKey): Boolean =
+    tryParseCertificateOrKey(key)?.let { hasPrivateAuthKey(it) } ?: false
+
+  /** @see hasPrivateAuthKey */
+  public fun hasPrivateAuthKey(cert: OpenPGPCertificate): Boolean {
+    if (cert !is OpenPGPKey) return false
+    val subkeys = cert.getSecretKeys().values
+    return AUTH_CAPABILITY_RANKING.any { flag ->
+      subkeys.any { it.hasKeyFlags(Date(), flag) && !it.getPGPSecretKey().isPrivateKeyEmpty() }
+    }
+  }
+
+  /**
    * Parse the public part of the first authentication-capable (sub)key from [OpenPGPCertificate] or
    * null if none was found
    */

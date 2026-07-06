@@ -326,11 +326,54 @@ class OpenPgpCardPrompt(
     }
   }
 
+  /**
+   * Shows a modal "remove your card" dialog and **suspends** until [card] is physically lifted (or a
+   * timeout elapses), then dismisses the dialog and releases [reader].
+   *
+   * Unlike [releaseReaderWhenCardRemoved] this blocks the caller. NFC reader mode is only active
+   * while the hosting activity is resumed, so when an operation would otherwise let its activity
+   * pause/finish right after the card exchange (e.g. an SSH authentication during a git push, whose
+   * activity moves on once auth succeeds), holding the caller here keeps the activity foreground —
+   * and the card in reader mode — until the user removes it, so the platform never dispatches the
+   * still-present card's NDEF URL.
+   */
+  suspend fun awaitCardRemoval(card: OpenPgpNfcCard, reader: CardReader) {
+    val dialog =
+      withContext(dispatcherProvider.main()) {
+        if (activity.isFinishing || activity.isDestroyed) return@withContext null
+        MaterialAlertDialogBuilder(activity)
+          .setTitle(R.string.openpgp_nfc_remove_card_title)
+          .setMessage(R.string.openpgp_nfc_remove_card_message)
+          .setCancelable(false)
+          .show()
+      }
+    try {
+      withContext(dispatcherProvider.io()) {
+        val deadline = System.currentTimeMillis() + READER_MODE_REMOVAL_TIMEOUT_MS
+        var consecutiveMisses = 0
+        while (consecutiveMisses < 2 && System.currentTimeMillis() < deadline) {
+          if (card.isPresent()) {
+            consecutiveMisses = 0
+            delay(READER_MODE_POLL_INTERVAL_MS)
+          } else {
+            consecutiveMisses++
+          }
+        }
+      }
+    } finally {
+      runCatching { card.close() }
+      withContext(dispatcherProvider.main()) { runCatching { dialog?.dismiss() } }
+      reader.close()
+    }
+  }
+
   companion object {
     /** The minimum PW1 (user/signing) PIN length mandated by the OpenPGP Card specification. */
     const val MIN_PIN_LENGTH = 6
 
     private const val READER_MODE_RELEASE_TIMEOUT_MS = 30_000L
+    // Longer cap for the interactive "remove your card" wait, which depends on the user reacting.
+    private const val READER_MODE_REMOVAL_TIMEOUT_MS = 60_000L
     private const val READER_MODE_POLL_INTERVAL_MS = 300L
     private val PIN_FAILURE_REGEX = Regex("""63 c[0-9a-f]""", RegexOption.IGNORE_CASE)
 

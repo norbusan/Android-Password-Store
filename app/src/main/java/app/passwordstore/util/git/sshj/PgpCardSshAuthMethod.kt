@@ -164,8 +164,12 @@ class CardSshSigner(
             runBlocking { prompt.dismissDialog() }
             if (!pinFromCache) prompt.storeCachedPin(cacheKey, currentPin, cachePin)
             readerHandedOff = true
-            prompt.releaseReaderWhenCardRemoved(attempt.card, activeReader)
-            return attempt.value
+            val signature = attempt.value
+            // Block until the card is lifted so reader mode stays up (keeping the activity
+            // foreground) and the platform never dispatches the card's NDEF URL once the git push
+            // proceeds and this activity moves on.
+            runBlocking { prompt.awaitCardRemoval(attempt.card, activeReader) }
+            return signature
           }
           OpenPgpCardPrompt.Attempt.Cancelled -> {
             readerHandedOff = true
