@@ -8,6 +8,7 @@ package app.passwordstore.ui.pgp
 import android.annotation.SuppressLint
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -41,6 +43,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import app.passwordstore.R
 import app.passwordstore.crypto.PGPIdentifier
 import app.passwordstore.crypto.PGPIdentifier.KeyId
@@ -62,6 +65,8 @@ fun KeyList(
   onExportItemClick: (identifier: PGPIdentifier) -> Unit,
   onExportPublicClick: (identifier: PGPIdentifier) -> Unit,
   modifier: Modifier = Modifier,
+  isStubKey: (identifier: PGPIdentifier) -> Boolean = { false },
+  onKeyInfoClick: (identifier: PGPIdentifier) -> Unit = {},
   onKeySelected: ((identifier: PGPIdentifier, isSelected: Boolean) -> Unit)? = null,
   singleSelection: Boolean = false,
 ) {
@@ -86,6 +91,8 @@ fun KeyList(
         KeyItem(
           identifier = identifier,
           isSecretKey = isSecretKey,
+          isStubKey = isStubKey,
+          onKeyInfoClick = onKeyInfoClick,
           onChangePassphraseClick = onChangePassphraseClick,
           onDeleteItemClick = onDeleteItemClick,
           onExportItemClick = onExportItemClick,
@@ -111,6 +118,8 @@ fun KeyList(
 private fun KeyItem(
   identifier: Pair<KeyId?, UserId?>,
   isSecretKey: (identifier: PGPIdentifier) -> Boolean,
+  isStubKey: (identifier: PGPIdentifier) -> Boolean,
+  onKeyInfoClick: (identifier: PGPIdentifier) -> Unit,
   onChangePassphraseClick: (identifier: PGPIdentifier) -> Unit,
   onDeleteItemClick: (identifier: PGPIdentifier) -> Unit,
   onExportItemClick: (identifier: PGPIdentifier) -> Unit,
@@ -135,7 +144,6 @@ private fun KeyItem(
   Row(
     modifier =
       modifier
-        .padding(horizontal = SpacingLarge, vertical = SpacingSmall)
         .fillMaxWidth()
         .conditional(onKeySelected != null) {
           toggleable(
@@ -146,10 +154,30 @@ private fun KeyItem(
               checked = it
             },
           )
-        },
+        }
+        // Outside selection mode, tapping a key opens its info dialog.
+        .conditional(onKeySelected == null) { clickable { onKeyInfoClick(keyId) } }
+        .padding(horizontal = SpacingLarge, vertical = SpacingSmall),
     horizontalArrangement = Arrangement.SpaceBetween,
     verticalAlignment = Alignment.CenterVertically,
   ) {
+    if (isStubKey(keyId)) {
+      Icon(
+        painter = painterResource(id = R.drawable.ic_hardware_key_24dp),
+        contentDescription = stringResource(R.string.pgp_key_hardware_indicator),
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.size(20.dp),
+      )
+      Spacer(modifier = Modifier.width(SpacingSmall))
+    } else if (isSecretKey(keyId)) {
+      Icon(
+        painter = painterResource(id = R.drawable.ic_software_key_24dp),
+        contentDescription = stringResource(R.string.pgp_key_software_indicator),
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.size(20.dp),
+      )
+      Spacer(modifier = Modifier.width(SpacingSmall))
+    }
     Text(
       text = identifier.second.toString(),
       modifier = Modifier.weight(1f),
