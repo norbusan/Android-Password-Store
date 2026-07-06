@@ -32,8 +32,10 @@ import app.passwordstore.util.extensions.viewBinding
 import app.passwordstore.util.extensions.wipe
 import app.passwordstore.util.settings.PreferenceKeys
 import app.passwordstore.util.shortcuts.ShortcutHandler
+import com.github.michaelbull.result.get
 import com.github.michaelbull.result.getError
 import com.github.michaelbull.result.getOrThrow
+import com.github.michaelbull.result.runCatching
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dagger.hilt.android.AndroidEntryPoint
 import java.io.ByteArrayOutputStream
@@ -160,7 +162,7 @@ class DecryptActivity : BasePGPActivity() {
     // dialog, the card op run on the card's own thread, inline PIN entry with retries (so reader
     // mode stays on across wrong PINs and never triggers the NDEF-URL popup), and reader mode
     // released only once the card is physically removed.
-    val prompt = OpenPgpCardPrompt(this, R.string.openpgp_nfc_decrypt_title)
+    val prompt = OpenPgpCardPrompt(this, R.string.openpgp_nfc_decrypt_title, dispatcherProvider)
     val reader = prompt.createReader()
     if (reader == null) {
       showSmartcardError(getString(R.string.openpgp_nfc_unavailable))
@@ -200,7 +202,7 @@ class DecryptActivity : BasePGPActivity() {
           pinErrorMessage = null
           cardMessage = presentMessage
         }
-        val currentPin = requireNotNull(pin)
+        val currentPin = requireNotNull(pin) { "PIN must be set before contacting the card" }
         val attempt =
           prompt.attempt(reader, cardMessage) { card ->
             val results =
@@ -259,7 +261,7 @@ class DecryptActivity : BasePGPActivity() {
               val remaining =
                 OpenPgpCardPrompt.smartcardPinRetriesRemaining(error)
                   ?: withContext(dispatcherProvider.io()) {
-                    runCatching { attempt.card?.readUserPinRetries() }.getOrNull()
+                    runCatching { attempt.card?.readUserPinRetries() }.get()
                   }
               if (remaining == 0) {
                 // Blocked: report in a dialog, hold reader mode until the card is lifted, and stop

@@ -14,6 +14,7 @@ import app.passwordstore.crypto.PGPIdentifier
 import app.passwordstore.crypto.PGPKey
 import app.passwordstore.crypto.PGPKeyManager
 import app.passwordstore.data.repo.PasswordRepository
+import app.passwordstore.util.coroutines.DispatcherProvider
 import app.passwordstore.util.crypto.CardReader
 import app.passwordstore.util.crypto.OpenPgpCardPrompt
 import app.passwordstore.util.crypto.OpenPgpNfcCard
@@ -22,6 +23,9 @@ import app.passwordstore.util.crypto.SmartcardOperationHandledException
 import app.passwordstore.util.extensions.hideKeyboard
 import app.passwordstore.util.extensions.wipe
 import com.github.michaelbull.result.get
+import com.github.michaelbull.result.getOrElse
+import com.github.michaelbull.result.runCatching
+import com.google.android.material.R as materialR
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.ByteArrayOutputStream
@@ -65,6 +69,7 @@ class OpenPgpCommitSigner(
   private val activity: FragmentActivity,
   private val keyManager: PGPKeyManager,
   private val smartcardStore: OpenPgpSmartcardStore,
+  private val dispatcherProvider: DispatcherProvider,
 ) : GpgSigner() {
 
   override fun sign(
@@ -94,7 +99,7 @@ class OpenPgpCommitSigner(
     gpgSigningKey: String?,
     committer: PersonIdent,
     credentialsProvider: CredentialsProvider?,
-  ): Boolean = runCatching { resolveSigningKey(gpgSigningKey) }.isSuccess
+  ): Boolean = runCatching { resolveSigningKey(gpgSigningKey) }.isOk
 
   private fun resolveSigningKey(gpgSigningKey: String?): PGPKey {
     val identifiers =
@@ -124,7 +129,7 @@ class OpenPgpCommitSigner(
     }
     val passphrase =
       runBlocking {
-          OpenPgpCardPrompt(activity, R.string.git_signing_passphrase_title)
+          OpenPgpCardPrompt(activity, R.string.git_signing_passphrase_title, dispatcherProvider)
             .askSecret(
               titleRes = R.string.git_signing_passphrase_title,
               hintRes = R.string.ssh_keygen_passphrase,
@@ -168,7 +173,7 @@ class OpenPgpCommitSigner(
     // The shared prompt keeps reader mode enabled for the whole operation, shows the reused
     // present/hold-card dialog, and runs the card exchange on the card's own thread. Any smartcard
     // failure is reported to the user in a dialog (never a snackbar) by the outer catch below.
-    val prompt = OpenPgpCardPrompt(activity, R.string.git_signing_card_title)
+    val prompt = OpenPgpCardPrompt(activity, R.string.git_signing_card_title, dispatcherProvider)
     var reader: CardReader? = null
     var pin: CharArray? = null
     // Reader mode is released via the removal watcher (which disables it once the card leaves) on
@@ -213,7 +218,7 @@ class OpenPgpCommitSigner(
           pinErrorMessage = null
           cardMessage = presentMessage
         }
-        val currentPin = requireNotNull(pin)
+        val currentPin = requireNotNull(pin) { "PIN must be set before contacting the card" }
         // The whole card exchange (applet select → verify → sign) runs on a single thread with no
         // hop, so a genuine wrong PIN reliably comes back as a card status word (e.g. 63 Cx) rather
         // than a transceive error caused by racing the NFC presence check.
@@ -261,7 +266,7 @@ class OpenPgpCommitSigner(
               // after a status word that omits it (69 82, a 6A 80 length/format rejection, …).
               val remaining =
                 OpenPgpCardPrompt.smartcardPinRetriesRemaining(e)
-                  ?: runCatching { attempt.card?.readSignaturePinRetries() }.getOrNull()
+                  ?: runCatching { attempt.card?.readSignaturePinRetries() }.get()
               if (remaining == 0) {
                 // Blocked: hold reader mode until the card is lifted, then abort — the outer catch
                 // reports it in a dialog. Stop asking for a PIN.
@@ -359,7 +364,7 @@ class OpenPgpCommitSigner(
 
   private fun deemphasizeButton(button: Button) {
     button.setTextColor(
-      MaterialColors.getColor(button, com.google.android.material.R.attr.colorOnSurfaceVariant)
+      MaterialColors.getColor(button, materialR.attr.colorOnSurfaceVariant)
     )
   }
 
@@ -460,6 +465,9 @@ class OpenPgpCommitSigner(
   }
 
   companion object {
+    // RSA_SIGN is a legacy OpenPGP algorithm id that BouncyCastle deprecates in favour of
+    // RSA_GENERAL, but keys carrying the old tag still exist and must be recognized here.
+    @Suppress("DEPRECATION")
     private val RSA_SIGNING_ALGORITHMS =
       setOf(PublicKeyAlgorithmTags.RSA_GENERAL, PublicKeyAlgorithmTags.RSA_SIGN)
   }

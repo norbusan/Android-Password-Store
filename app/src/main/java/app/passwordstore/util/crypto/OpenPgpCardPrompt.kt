@@ -17,16 +17,18 @@ import androidx.lifecycle.lifecycleScope
 import app.passwordstore.R
 import app.passwordstore.databinding.DialogPasswordEntryBinding
 import app.passwordstore.ui.crypto.BasePGPActivity
+import app.passwordstore.util.coroutines.DispatcherProvider
 import app.passwordstore.util.extensions.hideKeyboard
 import app.passwordstore.util.extensions.sharedPrefs
 import app.passwordstore.util.extensions.wipe
 import app.passwordstore.util.settings.PreferenceKeys
+import com.github.michaelbull.result.onErr
+import com.github.michaelbull.result.runCatching
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -50,6 +52,7 @@ import logcat.logcat
 class OpenPgpCardPrompt(
   private val activity: FragmentActivity,
   @StringRes private val titleRes: Int,
+  private val dispatcherProvider: DispatcherProvider,
 ) {
 
   private val cardDialog = AtomicReference<AlertDialog?>(null)
@@ -72,7 +75,7 @@ class OpenPgpCardPrompt(
 
   /** Enables reader mode for the operation. Returns `null` when NFC is unavailable or disabled. */
   suspend fun createReader(): CardReader? =
-    withContext(Dispatchers.Main) { CardReader.create(activity) }
+    withContext(dispatcherProvider.main()) { CardReader.create(activity) }
 
   /**
    * Shows (or, on a retry, reuses and re-labels with [message]) the card dialog, awaits a tap on
@@ -87,9 +90,9 @@ class OpenPgpCardPrompt(
   ): Attempt<T> = coroutineScope {
     val cancel = CompletableDeferred<Unit>()
     cardDialogCancel.set(cancel)
-    withContext(Dispatchers.Main) { showOrUpdateDialog(message) }
+    withContext(dispatcherProvider.main()) { showOrUpdateDialog(message) }
     val attemptJob =
-      async(Dispatchers.IO) {
+      async(dispatcherProvider.io()) {
         val card = reader.awaitCard {
           activity.runOnUiThread {
             cardDialog.get()?.let { dialog ->
@@ -153,7 +156,7 @@ class OpenPgpCardPrompt(
 
   suspend fun dismissDialog() {
     val dialog = cardDialog.getAndSet(null) ?: return
-    withContext(Dispatchers.Main) { dialog.dismiss() }
+    withContext(dispatcherProvider.main()) { dialog.dismiss() }
   }
 
   class SecretEntry(val secret: CharArray, val cache: Boolean)
@@ -178,7 +181,7 @@ class OpenPgpCardPrompt(
     val cacheDefault =
       showCache && activity.sharedPrefs.getBoolean(PreferenceKeys.CACHE_PASSPHRASE, false)
     val result = CompletableDeferred<SecretEntry?>()
-    withContext(Dispatchers.Main) {
+    withContext(dispatcherProvider.main()) {
       try {
         val binding = DialogPasswordEntryBinding.inflate(activity.layoutInflater)
         binding.passwordField.setHint(hintRes)
@@ -211,7 +214,11 @@ class OpenPgpCardPrompt(
           errorMessage != null -> binding.passwordField.error = errorMessage
           minLength > 0 ->
             binding.passwordField.helperText =
-              activity.getString(R.string.openpgp_card_pin_min_length, minLength)
+              activity.resources.getQuantityString(
+                R.plurals.openpgp_card_pin_min_length,
+                minLength,
+                minLength,
+              )
         }
         if (minLength > 0) {
           // Enforce the minimum PIN length by keeping the confirm button disabled until enough
@@ -264,12 +271,12 @@ class OpenPgpCardPrompt(
           )
         }
       }
-      .onFailure { e -> logcat { e.asLog() } }
+      .onErr { e -> logcat { e.asLog() } }
   }
 
   /** Shows a simple informational dialog (used for terminal card errors, e.g. a blocked PIN). */
   suspend fun showError(@StringRes titleRes: Int, message: String) {
-    withContext(Dispatchers.Main) {
+    withContext(dispatcherProvider.main()) {
       MaterialAlertDialogBuilder(activity)
         .setTitle(titleRes)
         .setMessage(message)
@@ -289,7 +296,7 @@ class OpenPgpCardPrompt(
   fun releaseReaderWhenCardRemoved(card: OpenPgpNfcCard?, reader: CardReader) {
     activity.lifecycleScope.launch {
       if (card != null) {
-        withContext(Dispatchers.IO) {
+        withContext(dispatcherProvider.io()) {
           try {
             val deadline = System.currentTimeMillis() + READER_MODE_RELEASE_TIMEOUT_MS
             // Actively probe the card; two consecutive misses mean it has left the field (a single

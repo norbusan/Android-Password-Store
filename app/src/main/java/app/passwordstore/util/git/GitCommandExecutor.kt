@@ -80,6 +80,7 @@ class GitCommandExecutor(
                           activity,
                           hiltEntryPoint.pgpKeyManager(),
                           hiltEntryPoint.smartcardStore(),
+                          dispatcherProvider,
                         )
                       )
                   }

@@ -6,6 +6,7 @@
 package app.passwordstore.util.crypto
 
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import app.passwordstore.crypto.PGPIdentifier
 import app.passwordstore.injection.prefs.SettingsPreferences
 import javax.inject.Inject
@@ -16,14 +17,13 @@ class OpenPgpSmartcardStore
 constructor(@SettingsPreferences private val preferences: SharedPreferences) {
 
   fun associate(primaryKeyId: PGPIdentifier.KeyId, fingerprints: List<ByteArray>, url: String?) {
-    preferences
-      .edit()
-      .putString(
+    preferences.edit {
+      putString(
         fingerprintKey(primaryKeyId),
         fingerprints.joinToString("\n") { Hex.toHexString(it) },
       )
-      .putString(urlKey(primaryKeyId), url.orEmpty())
-      .apply()
+      putString(urlKey(primaryKeyId), url.orEmpty())
+    }
   }
 
   fun hasAssociation(primaryKeyId: PGPIdentifier.KeyId): Boolean =

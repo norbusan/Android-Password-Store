@@ -14,6 +14,8 @@ import androidx.core.content.getSystemService
 import app.passwordstore.R
 import app.passwordstore.data.password.PasswordItem
 import app.passwordstore.ui.crypto.BasePGPActivity
+import com.github.michaelbull.result.onErr
+import com.github.michaelbull.result.runCatching
 import dagger.Reusable
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -91,7 +93,7 @@ class ShortcutHandler @Inject constructor(@ApplicationContext val context: Conte
           shortcutManager.removeDynamicShortcuts(staleIds)
         }
       }
-      .onFailure { logcat { "Failed to prune dynamic shortcuts: ${it.message}" } }
+      .onErr { logcat { "Failed to prune dynamic shortcuts: ${it.message}" } }
   }
 
   /** Creates a [ShortcutInfo] from [item] and assigns [intent] to it. */

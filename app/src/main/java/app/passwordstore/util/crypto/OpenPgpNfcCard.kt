@@ -11,13 +11,15 @@ import android.nfc.Tag
 import android.nfc.tech.IsoDep
 import android.os.Bundle
 import app.passwordstore.R
+import com.github.michaelbull.result.get
+import com.github.michaelbull.result.getOr
+import com.github.michaelbull.result.runCatching
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.selects.select
@@ -91,7 +93,7 @@ class OpenPgpNfcCard(
   fun readCardInfo(): OpenPgpCardInfo {
     val applicationData = transceive(GET_APPLICATION_RELATED_DATA)
     val fingerprints = findTlv(applicationData, 0xC5)?.let(::parseFingerprints).orEmpty()
-    val url = runCatching { transceive(GET_URL).toString(Charsets.UTF_8).trim() }.getOrNull()
+    val url = runCatching { transceive(GET_URL).toString(Charsets.UTF_8).trim() }.get()
     return OpenPgpCardInfo(fingerprints = fingerprints, url = url?.takeIf { it.isNotBlank() })
   }
 
@@ -107,7 +109,7 @@ class OpenPgpNfcCard(
         isoDep.transceive(GET_APPLICATION_RELATED_DATA)
         true
       }
-      .getOrDefault(false)
+      .getOr(false)
 
   override fun close() {
     runCatching { isoDep.close() }

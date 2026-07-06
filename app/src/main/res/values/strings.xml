@@ -347,7 +347,6 @@
   <string name="password_creation_file_encryption_failed_ids_message">\n\nEncryption failed for%1$s</string>
   <string name="password_creation_file_encryption_failed_expired_key">expired key</string>
   <string name="password_creation_file_write_fail_message">Failed to write password file to the store, please try again.</string>
-  <string name="password_creation_git_commit_failed_message">Password was saved, but Git commit failed:\n\n%1$s</string>
   <string name="password_creation_unusable_encryption_key_error_message">Encryption failure. Check expiration date and revocation status of the PGP key(s) using an external utility.</string>
   <string name="password_creation_no_keys_provided_message">No matching PGP keys found.</string>
   <string name="password_creation_duplicate_error">File already exists, please use a different name.</string>
@@ -439,7 +438,10 @@
   <string name="openpgp_nfc_fingerprint_mismatch">The imported key does not match the fingerprints reported by the OpenPGP card.</string>
   <string name="openpgp_card_pin_title">OpenPGP card PIN</string>
   <string name="openpgp_card_pin_hint">PIN</string>
-  <string name="openpgp_card_pin_min_length">At least %1$d characters</string>
+  <plurals name="openpgp_card_pin_min_length">
+    <item quantity="one">At least %d character</item>
+    <item quantity="other">At least %d characters</item>
+  </plurals>
   <string name="openpgp_card_wrong_pin">Wrong OpenPGP card PIN</string>
   <plurals name="openpgp_card_wrong_pin_remaining">
     <item quantity="one">Wrong PIN. %d attempt remaining before the card is blocked.</item>
